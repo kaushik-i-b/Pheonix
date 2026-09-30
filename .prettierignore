@@ -1,0 +1,8 @@
+node_modules
+dist
+.next
+coverage
+artifacts
+pnpm-lock.yaml
+examples/legacy-bank
+benchmarks/**/generated

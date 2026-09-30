@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm 12 uses `allowBuilds` (map) to permit dependency postinstall scripts.
+allowBuilds:
+  esbuild: true
+  next: true
+  sharp: true
+  unrs-resolver: true
+  '@tailwindcss/oxide': true
+  workerd: true

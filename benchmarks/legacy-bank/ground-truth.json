@@ -1,0 +1,630 @@
+{
+  "version": 1,
+  "target": "examples/legacy-bank",
+  "generatedAt": "2026-09-30T21:20:00+05:30",
+  "notes": "All amounts USD. 'Internal fee path' = TransferSvc/FeeCollector/Utils.calcXferFeeOnline (online INTERNAL transfers). 'Batch fee path' = SettlementBatch/Utils.calcXferFeeBatch (EXTERNAL transfers at settlement). 'DB fee path' = calc_transfer_fee() in V3 migration (corrections). Fresh accounts (opened today) are assumed unless stated; seeded accounts 1-10 exist after Flyway V2. probe.sh reproduces every observable below against a running instance.",
+  "behaviors": [
+    {
+      "id": "LB-001",
+      "title": "Transfer fee logic implemented three times with drifted rules",
+      "category": "fees",
+      "description": "The 0.5% transfer fee is computed by three independent implementations that disagree at the edges: (a) online path Utils.calcXferFeeOnline - 0.5% HALF_UP, min 0.25, waived below 100.00, no maximum; (b) settlement batch path Utils.calcXferFeeBatch - 0.5% HALF_EVEN, min 0.25, no waiver, no maximum; (c) DB function calc_transfer_fee used by corrections - ROUND() half-away-from-zero, min 0.25, waived below 50.00. GET /api/fees/schedule publishes a fourth, different story (max 15.00, waiver below 100.00 for all transfers, corrections free).",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "calcXferFeeOnline",
+          "lines": "31-40"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "calcXferFeeBatch",
+          "lines": "42-49"
+        },
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "symbol": "calc_transfer_fee",
+          "lines": "4-12"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/CorrectionSvc.java",
+          "symbol": "correct (SELECT calc_transfer_fee)",
+          "lines": "76-79"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/web/ApiController.java",
+          "symbol": "feeSchedule",
+          "lines": "247-292"
+        }
+      ],
+      "observable": "With a fresh account A (initialDeposit 1000) and account B: POST /api/transfers {type:INTERNAL, from A to B, amount:105.00} -> response fee == 0.53. POST /api/transfers {type:EXTERNAL, from A, amount:105.00} then POST /api/settlement/run -> GET /api/transfers/{id} fee == 0.52 (also SQL: SELECT fee FROM transfers WHERE id=...). POST /api/corrections {transferId:<a SETTLED internal transfer>, newAmount:80.00} -> response newFee == 0.40, while a fresh INTERNAL transfer of 80.00 returns fee == 0.",
+      "naiveRewriteFailure": "A rewrite factors the fee into one shared calculator (usually the documented schedule) and returns identical fees on all paths, failing 0.53 vs 0.52, the 80.00 waiver asymmetry, and the 0.40 correction fee.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "fee",
+        "three",
+        "batch",
+        "correction",
+        "diverge",
+        "different",
+        "calc_transfer_fee",
+        "0.5%",
+        "drift"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-002",
+      "title": "Rounding mode split: HALF_UP online vs HALF_EVEN in batch on x.xx5 amounts",
+      "category": "rounding",
+      "description": "Money columns are numeric(18,4). The online fee path rounds amount*0.005 with setScale(2, HALF_UP); the batch path uses setScale(2, HALF_EVEN); the DB paths (calc_transfer_fee, history endpoint ROUND(SUM(amount),2), v_acct_daily) use PostgreSQL ROUND which is half-away-from-zero. Amount 105.00 gives raw fee 0.525: online charges 0.53, batch charges 0.52.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "calcXferFeeOnline (HALF_UP) / calcXferFeeBatch (HALF_EVEN)",
+          "lines": "31-49"
+        },
+        {
+          "path": "src/main/resources/db/migration/V1__schema.sql",
+          "symbol": "ledger_entries.amount NUMERIC(18,4)",
+          "lines": "22-26"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/web/ApiController.java",
+          "symbol": "history summary ROUND(SUM(amount),2)",
+          "lines": "192-197"
+        }
+      ],
+      "observable": "INTERNAL transfer of 105.00 from a fresh account -> fee == 0.53. EXTERNAL transfer of 105.00 + POST /api/settlement/run -> transfers.fee == 0.52 (GET /api/transfers/{id} .fee). Ledger row amounts carry 4 decimals (e.g. GET /api/accounts/{id}/ledger shows -0.5300).",
+      "naiveRewriteFailure": "A rewrite picks one rounding mode everywhere (typically HALF_UP) and charges 0.53 on the batch path too, diverging by a cent per x.xx5 transfer and breaking penny-exact equivalence checks.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "rounding",
+        "half-up",
+        "half_up",
+        "half-even",
+        "half_even",
+        "0.53",
+        "0.52",
+        "0.525",
+        "rounding mode"
+      ],
+      "relatedInvariantKind": "rounding-stability"
+    },
+    {
+      "id": "LB-003",
+      "title": "Magic fee-waiver threshold 100.00 hardcoded only in the online path",
+      "category": "fees",
+      "description": "Utils.calcXferFeeOnline skips the fee entirely when amount < SMALL_XFER_LIMIT (100.00, hardcoded constant). The settlement batch has no waiver at all, and the DB function waives below 50.00 instead. The published schedule claims the 100.00 waiver for both transfer services.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "SMALL_XFER_LIMIT",
+          "lines": "18-19"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "calcXferFeeOnline waiver",
+          "lines": "31-34"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "run (fee without waiver)",
+          "lines": "55-63"
+        },
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "symbol": "calc_transfer_fee (amt < 50)",
+          "lines": "4-8"
+        }
+      ],
+      "observable": "Fresh account with 1000: INTERNAL transfer of 80.00 -> fee == 0. EXTERNAL transfer of 80.00 + POST /api/settlement/run -> transfers.fee == 0.40 and a FEE ledger entry of -0.4000 (reference FEE-{id}) exists.",
+      "naiveRewriteFailure": "A rewrite applies the documented 'waived below 100' rule to all transfers and never charges the 0.40 batch fee on small external transfers.",
+      "difficulty": "low",
+      "matchKeywords": [
+        "waiver",
+        "waive",
+        "threshold",
+        "100.00",
+        "small",
+        "magic",
+        "hardcoded",
+        "limit"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-004",
+      "title": "Account-age fee waiver: accounts open >= 365 days pay no online transfer fee",
+      "category": "fees",
+      "description": "FeeCollector.collectFee computes ChronoUnit.DAYS between the account's opened_at and today; if >= 365 the online fee is waived (returns 0) regardless of amount. The waiver depends on wall-clock 'now', exists only on the online path (batch and DB function ignore account age), and is not in the published schedule.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/FeeCollector.java",
+          "symbol": "collectFee (ageDays >= 365)",
+          "lines": "38-44"
+        }
+      ],
+      "observable": "POST /api/accounts {ownerName:'Old', initialDeposit:1000, openedAt:'<today minus 2 years, ISO>'} and a fresh account 'New'. INTERNAL transfer of 500.00 from Old -> fee == 0; from New -> fee == 2.50. Seeded account 1 (opened ~730 days ago) behaves like Old.",
+      "naiveRewriteFailure": "A rewrite implements the published schedule (no age term) and charges long-standing customers, or bakes in a static exemption list instead of the opened_at-vs-now computation.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "age",
+        "opened_at",
+        "openedat",
+        "365",
+        "loyalty",
+        "old account",
+        "one year",
+        "365 days"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-005",
+      "title": "Idempotency enforced only partially: unique index on transfers, broken check-then-insert on deposits",
+      "category": "idempotency",
+      "description": "POST /api/transfers is protected by the UNIQUE index on transfers.idempotency_key plus a pre-check (TransferSvc.createTransfer), so a repeated key replays the original receipt (HTTP 200, duplicate:true) and posts nothing. POST /api/deposits runs outside any transaction and journals to request_log with a check-then-insert: the SELECT checks the raw key but the INSERT stores key.toLowerCase(), so any Idempotency-Key containing uppercase letters never matches on replay and the deposit double-posts. All-lowercase keys dedupe correctly.",
+      "locations": [
+        {
+          "path": "src/main/resources/db/migration/V1__schema.sql",
+          "symbol": "transfers.idempotency_key UNIQUE",
+          "lines": "36"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "createTransfer pre-check",
+          "lines": "49-58"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "deposit check-then-insert",
+          "lines": "159-215"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "key.toLowerCase() on journal write",
+          "lines": "209-213"
+        }
+      ],
+      "observable": "Fresh account with balance 0: POST /api/deposits twice with header Idempotency-Key: MixedCase-Key-1, amount 50 -> both return duplicate:false with different transferIds and balance becomes 100.0000 (double-posted). Same with all-lowercase key -> second returns duplicate:true, balance +25 once. POST /api/transfers twice with the same Idempotency-Key -> second returns HTTP 200 duplicate:true with the identical transferId and the balance moves once.",
+      "naiveRewriteFailure": "A rewrite implements one clean idempotency layer (e.g. unique key per request) for all endpoints and rejects the duplicate mixed-case deposit instead of double-posting it - changing observable balances.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "idempotency",
+        "idempotent",
+        "duplicate",
+        "deposit",
+        "lowercase",
+        "lower-case",
+        "case",
+        "double",
+        "unique index",
+        "check-then-insert"
+      ],
+      "relatedInvariantKind": "idempotency"
+    },
+    {
+      "id": "LB-006",
+      "title": "Swallowed audit exception: memo longer than 50 chars silently drops the audit trail row",
+      "category": "error-handling",
+      "description": "audit_log.short_memo is VARCHAR(50) NOT NULL. AuditWriter.record inserts the raw memo in a REQUIRES_NEW transaction; every caller wraps it in catch (Exception e) { log.debug(...) }. Any transfer whose memo is longer than 50 characters (or null) completes normally (HTTP 201, transfer persisted) but leaves no audit_log row - a stable but inconsistent state visible only in the DB.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/AuditWriter.java",
+          "symbol": "record",
+          "lines": "24-28"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "createTransfer catch/log.debug",
+          "lines": "138-141"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "withdrawal catch/log.debug",
+          "lines": "263-266"
+        },
+        {
+          "path": "src/main/resources/db/migration/V1__schema.sql",
+          "symbol": "audit_log.short_memo VARCHAR(50) NOT NULL",
+          "lines": "90-97"
+        }
+      ],
+      "observable": "POST /api/transfers (INTERNAL, amount 10.00, memo of 60+ chars) -> HTTP 201, status SETTLED, row present in transfers; SQL: SELECT count(*) FROM audit_log WHERE ref_table='transfers' AND ref_id={transferId} -> 0. Same call with memo 'short memo' -> count 1.",
+      "naiveRewriteFailure": "A rewrite either widens the audit column / truncates the memo (audit row appears where legacy has none) or lets the failure bubble up and 500s the transfer.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "audit",
+        "swallow",
+        "swallowed",
+        "memo",
+        "50 char",
+        "silent",
+        "log.debug",
+        "trail",
+        "varchar(50)"
+      ],
+      "relatedInvariantKind": "state-machine-legality"
+    },
+    {
+      "id": "LB-007",
+      "title": "REQUIRES_NEW fee commit survives the outer rollback on NSF",
+      "category": "transaction-boundary",
+      "description": "For INTERNAL transfers, FeeCollector.collectFee runs with @Transactional(propagation = REQUIRES_NEW) and commits the fee debit + FEE ledger entry before the principal leg is attempted. The subsequent funds check throws NsfException, rolling back the outer transaction (the transfers row disappears) - but the fee stays committed. The commented-out 'v1 pre-check' block above the fee call suggests the funds check happens first; it does not.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/FeeCollector.java",
+          "symbol": "collectFee @Transactional(REQUIRES_NEW)",
+          "lines": "27-51"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "createTransfer fee-then-NSF order",
+          "lines": "113-127"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "dead commented-out pre-check",
+          "lines": "113-117"
+        }
+      ],
+      "observable": "Fresh account with initialDeposit 100.00: POST /api/transfers {type:INTERNAL, amount:500.00} -> HTTP 400 {\"error\":\"NSF\"}; GET /api/accounts/{id} balance == 97.5000 (2.50 fee kept); ledger contains a FEE entry of -2.5000 with status SETTLED and reference FEE-{consumedId}; SQL SELECT count(*) FROM transfers WHERE from_account_id={id} -> 0.",
+      "naiveRewriteFailure": "A rewrite makes the whole transfer atomic: the failed transfer charges nothing and balance stays 100.00, breaking money-equivalence with the legacy system.",
+      "difficulty": "high",
+      "matchKeywords": [
+        "requires_new",
+        "requires new",
+        "rollback",
+        "survive",
+        "propagation",
+        "partial commit",
+        "insufficient funds",
+        "fee still",
+        "fee survives",
+        "fee is kept",
+        "fee retained"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-008",
+      "title": "Settlement batch processes strictly ORDER BY id; ordering decides who survives insufficient funds",
+      "category": "scheduling",
+      "description": "SettlementBatch.run selects pending transfers with 'WHERE status = PENDING ORDER BY id' and posts fees/debits sequentially without a transaction. When one account has two pending external transfers it cannot cover, the lower-id one settles and the higher-id one fails - creation order is load-bearing semantics.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "run (SELECT ... ORDER BY id)",
+          "lines": "43-90"
+        }
+      ],
+      "observable": "Fresh account balance 100.00; create EXTERNAL transfer A of 60.00, then EXTERNAL transfer B of 60.00 (B gets the higher id). POST /api/settlement/run -> GET /api/transfers/{A} status == SETTLED, /api/transfers/{B} status == FAILED. SQL: account balance == 100 - 0.30 (A fee) - 60 (A debit) - 0.30 (B fee, charged before the failed debit) = 39.4000 after this first run.",
+      "naiveRewriteFailure": "A rewrite that processes the pending queue by value date, creation timestamp, or arbitrary/parallel order can settle B and fail A, or nets the two transfers, producing different per-transfer statuses and balances.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "order by id",
+        "ordering",
+        "creation order",
+        "id order",
+        "lower id",
+        "settlement order",
+        "sequence",
+        "first-created"
+      ],
+      "relatedInvariantKind": "ordering"
+    },
+    {
+      "id": "LB-009",
+      "title": "Batch retry is not idempotent: every requeue re-charges the fee, then the item is stuck forever at retries=3",
+      "category": "scheduling",
+      "description": "Each run requeues FAILED transfers with retries < 3 (retries=retries+1) and reprocesses them. The batch fee is charged BEFORE the funds check and no marker is consulted, so every attempt leaves another committed FEE entry and balance debit. settlement_marker rows are written on success but never read by anything. After the 4th attempt retries == 3 and the transfer stays FAILED permanently, even if the account is later funded.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "requeue UPDATE ... retries < 3",
+          "lines": "38-41"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "fee charged before debit attempt",
+          "lines": "55-68"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "settlement_marker write (never read)",
+          "lines": "75-81"
+        }
+      ],
+      "observable": "Continue LB-008: run POST /api/settlement/run three more times. Then: GET /api/transfers/{B} retries == 3, status == FAILED; SQL SELECT count(*) FROM ledger_entries WHERE reference='FEE-{B}' -> 4 (one 0.30 fee per attempt); account balance == 100 - 0.30 - 60 - 4*0.30 = 38.5000. POST /api/deposits {accountId, amount:200} then POST /api/settlement/run -> B still FAILED (never settles despite funds).",
+      "naiveRewriteFailure": "A rewrite makes retries idempotent (charge fee once, or roll back the whole item) and/or keeps retrying after funds arrive, so fee-entry counts, balances, and the terminal FAILED state all diverge.",
+      "difficulty": "high",
+      "matchKeywords": [
+        "retry",
+        "retries",
+        "requeue",
+        "re-charge",
+        "recharge",
+        "charged again",
+        "fee again",
+        "double charge",
+        "marker",
+        "non-idempotent",
+        "not idempotent",
+        "stuck",
+        "exhausted",
+        "per attempt"
+      ],
+      "relatedInvariantKind": "retry-semantics"
+    },
+    {
+      "id": "LB-010",
+      "title": "Reconciliation silently writes a balancing entry instead of reporting drift; 0.01 tolerance ignored",
+      "category": "reconciliation",
+      "description": "ReconSvc.run compares accounts.balance with SUM(ledger_entries.amount). If |diff| <= 0.01 the drift is silently ignored (counted only as toleranceHits, balance left dirty). Otherwise it inserts a RECON_ADJUST ledger entry equal to the diff (making the ledger sum match the possibly-corrupt balance; balance itself is not touched) and the report always stores discrepancies = 0 with status IN_BALANCE and detail 'no unreconciled positions'.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/ReconSvc.java",
+          "symbol": "TOLERANCE / run",
+          "lines": "24-70"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/ReconSvc.java",
+          "symbol": "RECON_ADJUST insert",
+          "lines": "48-54"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/ReconSvc.java",
+          "symbol": "discrepancies hardcoded 0",
+          "lines": "56-69"
+        }
+      ],
+      "observable": "Fresh account (300 deposit). SQL: UPDATE accounts SET balance = balance + 5 WHERE id={id}; POST /api/reconciliation/run -> HTTP 202, report discrepancies == 0, autoCorrections == 1, status IN_BALANCE; ledger gains a RECON_ADJUST entry of +5.0000 (reference RECON-{date}); balance unchanged (still inflated by 5), SUM(ledger) now equals balance. Then SQL: UPDATE accounts SET balance = balance + 0.01; run again -> toleranceHits increments, autoCorrections == 0, no new RECON_ADJUST row for the account, 0.01 drift persists.",
+      "naiveRewriteFailure": "A rewrite reports drift as discrepancies (report no longer says 0/IN_BALANCE) or refuses to mutate the ledger, and treats 0.01 drift as an item instead of ignoring it.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "reconciliation",
+        "recon",
+        "tolerance",
+        "0.01",
+        "balancing",
+        "adjustment",
+        "recon_adjust",
+        "discrepanc",
+        "silent",
+        "drift"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-011",
+      "title": "DB trigger makes SETTLED ledger rows immutable, except for the correction channel session setting",
+      "category": "db-side",
+      "description": "Trigger ledger_immutable (BEFORE UPDATE OR DELETE ON ledger_entries) raises 'E188: settled ledger entries are immutable' when OLD.status = 'SETTLED', unless current_setting('app.correction_channel', true) = 'CORRECTION_JOB'. CorrectionSvc.correct issues SET LOCAL app.correction_channel = 'CORRECTION_JOB' inside its transaction, which is the only code path allowed to flip settled rows to CORRECTED. Rows with status POSTED are unprotected.",
+      "locations": [
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "symbol": "ledger_immutable_fn / CREATE TRIGGER ledger_immutable",
+          "lines": "13-33"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/CorrectionSvc.java",
+          "symbol": "SET LOCAL app.correction_channel",
+          "lines": "50"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/CorrectionSvc.java",
+          "symbol": "UPDATE ledger_entries SET status='CORRECTED'",
+          "lines": "60-70"
+        }
+      ],
+      "observable": "SQL (psql, outside the app): UPDATE ledger_entries SET memo='x' WHERE id={any SETTLED entry} -> ERROR 'E188: settled ledger entries are immutable (ledger row N)'. Via API: POST /api/corrections {transferId:<settled transfer>, reason:'...'} -> HTTP 200; originals flip to status CORRECTED and REVERSAL entries with reference CORR-{transferId} appear; balances restored. DELETE on a SETTLED row is likewise rejected.",
+      "naiveRewriteFailure": "A rewrite that drops the trigger (or enforces immutability in application code only) allows direct SQL mutation of settled history, or conversely blocks the correction path that the session-setting exception permits.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "trigger",
+        "immutable",
+        "immutability",
+        "settled",
+        "e188",
+        "correction channel",
+        "current_setting",
+        "delete"
+      ],
+      "relatedInvariantKind": "immutability"
+    },
+    {
+      "id": "LB-012",
+      "title": "Correction re-pricing uses the drifted DB fee function (waiver below 50, not 100)",
+      "category": "fees",
+      "description": "POST /api/corrections with newAmount re-prices the fee via SQL SELECT calc_transfer_fee(newAmount) - the V3 function that waives below 50.00 and uses PostgreSQL ROUND - not the online Java path. Correcting a transfer to 80.00 charges 0.40 even though a fresh online transfer of 80.00 is free, and the published schedule says corrections cost 0.00 ('back office absorbs').",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/CorrectionSvc.java",
+          "symbol": "correct (calc_transfer_fee)",
+          "lines": "74-104"
+        },
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "symbol": "calc_transfer_fee",
+          "lines": "4-12"
+        }
+      ],
+      "observable": "Settle an INTERNAL transfer of 105.00 (fee 0.53). POST /api/corrections {transferId, reason, newAmount:80.00} -> HTTP 200, newFee == 0.40, ledger shows REVERSAL entries for -105/-0.53/+105(credit side) and new DEBIT -80.0000 + FEE -0.4000 with references XFER-{id}/FEE-{id}. A fresh INTERNAL transfer of 80.00 instead charges fee 0. GET /api/fees/schedule claims CORRECTION is FLAT 0.00.",
+      "naiveRewriteFailure": "A rewrite prices corrections with the online fee engine (0 fee for 80.00) or the published 'corrections are free' rule, losing the 0.40 charge.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "correction",
+        "calc_transfer_fee",
+        "database function",
+        "db function",
+        "reprice",
+        "re-price",
+        "newamount",
+        "50.00",
+        "waiver below 50"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    },
+    {
+      "id": "LB-013",
+      "title": "Stale static balance cache on GET /api/accounts/{id} until an unrelated call clears it",
+      "category": "state-cache",
+      "description": "AcctSvc keeps a static ConcurrentHashMap BAL_CACHE. GET /api/accounts/{id} returns the cached balance once populated and never re-reads money movement; deposits, withdrawals and transfers do NOT invalidate it. Only GET /api/accounts (list) and the settlement run clear the whole map. The ledger endpoint and list endpoint read the DB directly, so two GET endpoints disagree.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/AcctSvc.java",
+          "symbol": "BAL_CACHE",
+          "lines": "25-26"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/AcctSvc.java",
+          "symbol": "getAcct cache read/populate",
+          "lines": "62-70"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/AcctSvc.java",
+          "symbol": "listAccounts BAL_CACHE.clear()",
+          "lines": "72-80"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "AcctSvc.clearBalCache()",
+          "lines": "93-94"
+        }
+      ],
+      "observable": "Fresh account, initialDeposit 100. GET /api/accounts/{id} -> balance 100.0000 (populates cache). POST /api/deposits {amount:50} -> 200. GET /api/accounts/{id} -> still 100.0000 (stale). GET /api/accounts (list) -> shows 150.0000 for the account and clears the cache. GET /api/accounts/{id} -> now 150.0000. GET /api/accounts/{id}/ledger .balance is 150.0000 throughout.",
+      "naiveRewriteFailure": "A rewrite reads the balance fresh on every GET (correct-by-intuition) and returns 150 immediately after the deposit, failing read-after-write equivalence with the legacy staleness window.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "cache",
+        "stale",
+        "balance",
+        "static",
+        "list",
+        "invalidate",
+        "out-of-date",
+        "out of date",
+        "refresh"
+      ],
+      "relatedInvariantKind": "monotonicity"
+    },
+    {
+      "id": "LB-014",
+      "title": "17:00 cutoff: transfers created at/after the cutoff get next business day as value_date",
+      "category": "time-cutoff",
+      "description": "TransferSvc.createTransfer compares LocalTime.now() against Utils.CUTOFF_HOUR (17): if now >= 17:00 the transfer's value_date becomes the next business day (Saturday/Sunday skipped via Utils.nextBusinessDay), differing from the created_at date. Applies to both INTERNAL and EXTERNAL transfers; nothing else in the response changes.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "createTransfer value-date cutoff",
+          "lines": "86-91"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "CUTOFF_HOUR / nextBusinessDay",
+          "lines": "25-26, 74-81"
+        }
+      ],
+      "observable": "Create any transfer and GET /api/transfers/{id}: if local hour >= 17 then valueDate == next business day (e.g. created 2026-09-30T20:56 (Wed) -> valueDate 2026-10-01; a Friday-evening transfer -> Monday) while createdAt stays today; if hour < 17 then valueDate == createdAt date. probe.sh computes the expectation from the current clock.",
+      "naiveRewriteFailure": "A rewrite sets value_date = creation date (or next day unconditionally, or ignores the weekend skip), diverging for every after-hours transfer - and equivalence tests run in the evening hit this constantly.",
+      "difficulty": "medium",
+      "matchKeywords": [
+        "cutoff",
+        "cut-off",
+        "17:00",
+        "value_date",
+        "value date",
+        "valuedate",
+        "business day",
+        "next day",
+        "weekend"
+      ],
+      "relatedInvariantKind": "monotonicity"
+    },
+    {
+      "id": "LB-015",
+      "title": "Wire-gateway timeout returns 504 but the transfer is already committed; retry replays it and settlement completes it",
+      "category": "error-handling",
+      "description": "For EXTERNAL transfers the row is committed (status PENDING) inside TransferSvc before the controller calls WireGateway.send. The gateway stub throws SocketTimeoutException for beneficiaryRouting '000000000', and the controller returns HTTP 504 - after the commit. The client sees a failure but an orphan PENDING transfer exists. A retry with the same Idempotency-Key returns HTTP 200 with duplicate:true and the same transferId (no second transfer). The next settlement run completes the orphan: fee charged, debit posted, status SETTLED.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/WireGateway.java",
+          "symbol": "send (SocketTimeoutException for 000000000)",
+          "lines": "18-24"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/web/ApiController.java",
+          "symbol": "createTransfer 504 after commit",
+          "lines": "98-121"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "doProcess2",
+          "lines": "150-157"
+        }
+      ],
+      "observable": "Fresh account, deposit 500. POST /api/transfers {type:EXTERNAL, amount:100.00, beneficiaryRouting:'000000000'} with Idempotency-Key K -> HTTP 504, body {error:WIRE_GATEWAY_TIMEOUT, transferId:N}; SQL shows transfers row N with status PENDING. POST again with same K -> HTTP 200, duplicate:true, transferId N (only one row). POST /api/settlement/run -> GET /api/transfers/N status == SETTLED, fee == 0.50, account balance == 399.5000.",
+      "naiveRewriteFailure": "A rewrite treats the 504 as a real failure (rolls back / never creates the row) or lets the retry create a second transfer, so the orphan-then-settled lifecycle and the single-debit guarantee both break.",
+      "difficulty": "high",
+      "matchKeywords": [
+        "timeout",
+        "504",
+        "orphan",
+        "pending",
+        "retry",
+        "wire",
+        "gateway",
+        "settles",
+        "committed",
+        "000000000"
+      ],
+      "relatedInvariantKind": "retry-semantics"
+    },
+    {
+      "id": "LB-016",
+      "title": "Dead code and an authoritative-looking but wrong comment: 'capped at 15.00' fee cap does not exist; markers and HelperOld are never read",
+      "category": "other",
+      "description": "Utils.java line 18 states the fee is 'capped at 15.00 per the 2021-06 fee committee minutes' and GET /api/fees/schedule publishes maximum 15.00 - but no code path applies any cap: an online transfer of 10000.00 charges 50.00. TransferSvc lines 113-117 contain a commented-out 'v1' NSF pre-check that implies funds are verified before fees; the live code does the opposite. settlement_marker rows are written by the batch but never SELECTed anywhere; HelperOld is entirely unused; tmpFlag/doProcess2/AcctSvc naming survives from the COBOL port.",
+      "locations": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/Utils.java",
+          "symbol": "wrong 'capped at 15.00' comment above calcXferFeeOnline",
+          "lines": "18, 31-40"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "symbol": "commented-out v1 pre-check",
+          "lines": "113-117"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/SettlementBatch.java",
+          "symbol": "settlement_marker insert (never read)",
+          "lines": "75-81"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/HelperOld.java",
+          "symbol": "HelperOld (unused)",
+          "lines": "1-30"
+        }
+      ],
+      "observable": "Fresh BUSINESS account with initialDeposit 20000: POST /api/transfers {type:INTERNAL, amount:10000.00} -> HTTP 201 with fee == 50.00 (not capped at 15.00 as the comment and /api/fees/schedule maximum claim). SQL: SELECT count(*) FROM settlement_marker -> nonzero after any settlement run; grep of the codebase shows no SELECT against settlement_marker.",
+      "naiveRewriteFailure": "A rewrite trusts the comment/schedule and implements maximum=15.00, charging 15.00 instead of 50.00 on large transfers; or it 'cleans up' by making the commented pre-check live, changing the fee-survives-NSF behavior.",
+      "difficulty": "low",
+      "matchKeywords": [
+        "cap",
+        "capped",
+        "15.00",
+        "comment",
+        "dead code",
+        "unused",
+        "wrong",
+        "maximum",
+        "stale",
+        "50.00",
+        "never read",
+        "helperold"
+      ],
+      "relatedInvariantKind": "money-conservation"
+    }
+  ]
+}

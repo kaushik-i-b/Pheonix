@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+.next/
+out/
+
+# java / maven (legacy example)
+target/
+*.class
+.mvn/wrapper/maven-wrapper.jar
+
+# runtime artifacts produced by Phoenix runs (evidence is inspectable locally, not committed)
+artifacts/*
+!artifacts/.gitkeep
+phoenix-runs/
+*.db
+*.sqlite
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# logs & coverage
+*.log
+logs/
+coverage/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
