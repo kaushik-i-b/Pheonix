@@ -20,6 +20,7 @@ artifacts/*
 phoenix-runs/
 *.db
 *.sqlite
+*.pid
 
 # env & secrets
 .env

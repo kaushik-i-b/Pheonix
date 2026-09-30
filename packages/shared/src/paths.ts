@@ -62,3 +62,26 @@ export function isWithinRoots(path: string, roots: readonly string[]): boolean {
   const candidate = canonicalizePath(isAbsolute(path) ? path : resolve(path));
   return pathIsInsideAny(candidate, roots.map(canonicalizePath));
 }
+
+/**
+ * Directories that carry no behavioural evidence: build output, dependency trees and editor
+ * state. Shared by the tool layer and static analysis so both see the same repository.
+ */
+export const IGNORED_DIRECTORIES: ReadonlySet<string> = new Set([
+  '.git',
+  'node_modules',
+  'target',
+  'build',
+  'dist',
+  '.next',
+  '.idea',
+  '.gradle',
+  '.mvn',
+  '__pycache__',
+  '.venv',
+  'coverage',
+]);
+
+export function shouldSkipDirectory(name: string): boolean {
+  return IGNORED_DIRECTORIES.has(name);
+}

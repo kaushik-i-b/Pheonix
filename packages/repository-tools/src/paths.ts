@@ -37,19 +37,4 @@ export function resolveScopedPath(path: string, options: ResolveScopedPathOption
 }
 
 /** Directories that carry no behavioural evidence and would only burn the tool budget. */
-export const IGNORED_DIRECTORIES = new Set([
-  '.git',
-  'node_modules',
-  'target',
-  'build',
-  'dist',
-  '.next',
-  '.idea',
-  '.gradle',
-  '__pycache__',
-  '.venv',
-]);
-
-export function shouldSkipDirectory(name: string): boolean {
-  return IGNORED_DIRECTORIES.has(name);
-}
+export { IGNORED_DIRECTORIES, shouldSkipDirectory } from '@phoenix/shared';
