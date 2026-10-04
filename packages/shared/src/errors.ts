@@ -13,6 +13,12 @@ export const phoenixErrorCodeSchema = z.enum([
   'LLM_INVALID_RESPONSE',
   'LLM_TIMEOUT',
   'LLM_RATE_LIMITED',
+  /**
+   * The model reached its token budget before producing an answer — typical of reasoning models,
+   * which spend the budget thinking. Deliberately absent from `retryableCodes`: the same request
+   * with the same budget fails the same way, so retrying only burns wall-clock time.
+   */
+  'LLM_OUTPUT_TRUNCATED',
   'PROMPT_NOT_FOUND',
   'PROMPT_VARIABLE_MISSING',
   'TOOL_NOT_ALLOWED',

@@ -54,8 +54,19 @@ export function sqlVerbOf(statement: string): SqlVerb {
   return 'unknown';
 }
 
-/** Words that follow FROM/JOIN/ON but are not tables. */
-const SQL_NOISE_TABLES = new Set(['SELECT', 'UNNEST', 'GENERATE_SERIES', 'LATERAL', 'DUAL', 'ONLY']);
+/** Words that follow FROM/JOIN/INTO/UPDATE/ON but are not tables. */
+const SQL_NOISE_TABLES = new Set([
+  'SELECT',
+  'UNNEST',
+  'GENERATE_SERIES',
+  'LATERAL',
+  'DUAL',
+  'ONLY',
+  // `BEFORE UPDATE OF balance ON accounts`: OF and SET sit exactly where a table name would be.
+  'OF',
+  'SET',
+  'WHERE',
+]);
 
 /** Table names touched by a statement, best effort: `FROM`/`JOIN`/`INTO`/`UPDATE` targets. */
 export function tablesOf(statement: string): string[] {

@@ -37,6 +37,12 @@ export const llmSettingsSchema = z.object({
   concurrency: z.number().int().positive().default(2),
   /** Optional path to a pricing table; without it cost is reported as unknown. */
   pricingPath: z.string().min(1).optional(),
+  /**
+   * Backend-specific request fields, e.g. `{"options":{"num_ctx":32768}}` for Ollama. Phoenix talks
+   * to any OpenAI-compatible endpoint with one client, so the knobs only one backend understands
+   * belong in configuration rather than in code.
+   */
+  extraBody: z.record(z.string(), z.unknown()).optional(),
 });
 export type LlmSettings = z.infer<typeof llmSettingsSchema>;
 
@@ -131,6 +137,26 @@ function bool(env: Record<string, string | undefined>, key: string): boolean | u
   return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
 }
 
+/** A JSON object from the environment, or a clear failure — never a half-parsed guess. */
+function jsonObject(env: Record<string, string | undefined>, key: string): Record<string, unknown> | undefined {
+  const raw = optionalString(env, key);
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new PhoenixError(
+      'CONFIG_INVALID',
+      `${key} must be a JSON object: ${error instanceof Error ? error.message : String(error)}`,
+      { key },
+    );
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PhoenixError('CONFIG_INVALID', `${key} must be a JSON object`, { key });
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export interface LoadConfigOptions {
   cwd?: string;
   envFiles?: string[];
@@ -169,6 +195,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const legacyDbUrl =
     optionalString(env, 'LEGACY_BANK_DB_URL') ?? 'postgres://legacy:legacy@localhost:5432/legacy_bank';
   const modernDbUrl = optionalString(env, 'MODERN_BANK_DB_URL');
+  const extraBody = jsonObject(env, 'LLM_EXTRA_BODY');
 
   const candidate = {
     llm: {
@@ -184,6 +211,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
       ...(optionalString(env, 'LLM_PRICING_PATH') !== undefined
         ? { pricingPath: optionalString(env, 'LLM_PRICING_PATH') }
         : {}),
+      ...(extraBody !== undefined ? { extraBody } : {}),
     },
     database: {
       url: optionalString(env, 'PHOENIX_DATABASE_URL') ?? 'postgres://phoenix:phoenix@localhost:5432/phoenix',

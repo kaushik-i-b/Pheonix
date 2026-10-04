@@ -162,18 +162,27 @@ export class FileArtifactStore {
     return { meta, absolutePath, deduplicated };
   }
 
+  /**
+   * An artifact path is immutable inside a run. Writing the same bytes again is a no-op (a resumed
+   * stage re-deriving what it already produced); writing *different* bytes is refused rather than
+   * allowed to destroy evidence. A new version of a document gets a new slug, so the tree keeps
+   * every version a decision was based on.
+   */
   private alreadyStored(absolutePath: string, meta: ArtifactMeta): boolean {
     if (!existsSync(absolutePath)) return false;
     const existing = readFileSync(absolutePath);
-    if (existing.byteLength !== meta.bytes) {
-      // Same path, different content: refuse to overwrite evidence silently.
-      throw new PhoenixError(
-        'ARTIFACT_WRITE_FAILED',
-        `refusing to overwrite ${meta.relativePath}: existing bytes differ from the new artifact`,
-        { relativePath: meta.relativePath, existingBytes: existing.byteLength, newBytes: meta.bytes },
-      );
-    }
-    return sha256Hex(existing) === meta.sha256;
+    if (sha256Hex(existing) === meta.sha256) return true;
+    throw new PhoenixError(
+      'ARTIFACT_WRITE_FAILED',
+      `refusing to overwrite ${meta.relativePath}: an artifact with different content already exists at that path (write the new version under a distinct slug)`,
+      {
+        relativePath: meta.relativePath,
+        existingSha256: sha256Hex(existing),
+        newSha256: meta.sha256,
+        existingBytes: existing.byteLength,
+        newBytes: meta.bytes,
+      },
+    );
   }
 
   /** Absolute path for an artifact, guaranteed to stay inside the run directory. */
@@ -325,7 +334,12 @@ export class FileArtifactStore {
 
   private appendIndex(meta: ArtifactMeta): void {
     const index = this.loadIndex(meta.runId);
-    const withoutDuplicate = index.filter((entry) => entry.id !== meta.id);
+    // Content-addressed ids collide whenever two artifacts hold identical bytes — two tasks that
+    // rendered the same prompt, for instance. Only a re-write of the *same path* is the same
+    // artifact; dropping the other record would hide a file that exists on disk.
+    const withoutDuplicate = index.filter(
+      (entry) => !(entry.id === meta.id && entry.relativePath === meta.relativePath),
+    );
     withoutDuplicate.push(meta);
     this.indexes.set(meta.runId, withoutDuplicate);
     const path = this.indexPath(meta.runId);

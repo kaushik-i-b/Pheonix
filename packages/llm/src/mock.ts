@@ -80,7 +80,10 @@ export class MockLlmProvider implements LlmProvider {
 
   async complete(request: CompletionRequest, _options: CompletionOptions = {}): Promise<CompletionResult> {
     const index = this.requests.length;
-    this.requests.push(request);
+    // A copy of the message list, not the caller's array: the agent loop keeps appending to the same
+    // history, so recording the reference would leave every "what did request N contain" assertion
+    // reading the final transcript instead of the request that was actually sent.
+    this.requests.push({ ...request, messages: [...request.messages] });
     if (this.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
 
     const response = await this.nextResponse(index);

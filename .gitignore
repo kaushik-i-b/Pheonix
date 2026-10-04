@@ -18,6 +18,7 @@ target/
 artifacts/*
 !artifacts/.gitkeep
 phoenix-runs/
+.phoenix-workspaces/
 *.db
 *.sqlite
 *.pid

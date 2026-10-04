@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { analyzeJavaFile, analyzeRepository, maskSource, splitStatements, type RepositoryAnalysis } from '../src/index.js';
+import { analyzeJavaFile, analyzeRepository, analyzeSqlFile, maskSource, splitStatements, tablesOf, type RepositoryAnalysis } from '../src/index.js';
 
 /**
  * A miniature legacy repository exercising every structural signal the analyzer claims to detect.
@@ -146,7 +146,10 @@ public class ThingSvc {
     }
 
     public String pad(long id) {
-        return String.format("%010d", Long.valueOf(id));
+        if (id > 100000) {
+            return String.format("%010d", Long.valueOf(id));
+        }
+        return String.valueOf(id);
     }
 }
 `;
@@ -309,6 +312,73 @@ describe('splitStatements', () => {
     expect(statements[0]?.raw).toContain('END;');
     expect(statements[1]?.raw).toContain('CREATE TRIGGER');
   });
+
+  it('does not end a statement at a semicolon inside a comment', () => {
+    const statements = splitStatements(
+      [
+        '-- audit response E188; the back office job bypasses this',
+        'CREATE TABLE audit_log (id BIGSERIAL PRIMARY KEY);',
+        '-- trailing note; not a statement',
+      ].join('\n'),
+    );
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.body).toContain('CREATE TABLE audit_log');
+  });
+
+  it('cites the line the statement begins on, not the commentary above it', () => {
+    const statements = splitStatements(
+      [
+        '-- why this exists:',
+        '-- it was the 2019 audit finding',
+        'CREATE INDEX ledger_ref_idx ON ledger_entries (ref);',
+      ].join('\n'),
+    );
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.line).toBe(3);
+    expect(statements[0]?.endLine).toBe(3);
+    // The commentary is still part of what a human is shown; it is just not what was classified.
+    expect(statements[0]?.raw).toContain('why this exists');
+    expect(statements[0]?.body.startsWith('CREATE INDEX')).toBe(true);
+  });
+});
+
+describe('analyzeSqlFile', () => {
+  it('classifies a statement whose leading comment would otherwise hide the verb', () => {
+    const analyzed = analyzeSqlFile(
+      'V9__fee.sql',
+      [
+        '-- the fee rule, restored from the 2019 runbook',
+        'CREATE OR REPLACE FUNCTION calc_fee(amt NUMERIC) RETURNS NUMERIC AS $$',
+        'BEGIN',
+        '    RETURN ROUND(amt * 0.005, 2);',
+        'END;',
+        '$$ LANGUAGE plpgsql IMMUTABLE;',
+      ].join('\n'),
+    );
+    expect(analyzed.statements).toHaveLength(1);
+    expect(analyzed.statements[0]?.kind).toBe('function');
+    expect(analyzed.statements[0]?.line).toBe(2);
+    expect(analyzed.statements[0]?.writes).toBe(true);
+    expect(analyzed.appliesDatabaseBehavior).toBe(true);
+    expect(analyzed.objects.map((object) => [object.name, object.kind, object.line])).toEqual([
+      ['calc_fee', 'function', 2],
+    ]);
+  });
+});
+
+describe('tablesOf', () => {
+  it('does not read a trigger clause keyword as a table', () => {
+    const statement =
+      'CREATE TRIGGER accounts_no_overdraft BEFORE UPDATE OF balance ON accounts FOR EACH ROW EXECUTE PROCEDURE reject_negative_balance()';
+    expect(tablesOf(statement)).toEqual(['accounts']);
+  });
+
+  it('finds every target of a write statement', () => {
+    expect(tablesOf('INSERT INTO ledger_entries (account_id) SELECT id FROM accounts WHERE balance > 0')).toEqual([
+      'accounts',
+      'ledger_entries',
+    ]);
+  });
 });
 
 describe('analyzeRepository', () => {
@@ -440,8 +510,18 @@ describe('analyzeRepository', () => {
 
   it('does not report digits inside string literals as magic numbers', () => {
     const magic = analysis.repositoryMap.suspiciousBehaviors.filter((entry) => entry.category === 'magic-number');
-    expect(magic.some((entry) => entry.description.includes('%010d'))).toBe(false);
-    expect(magic.some((entry) => entry.description.includes(' 010;'))).toBe(false);
+    // `pad` has one real threshold; the format specifier beside it must not count as one.
+    const pad = magic.find((entry) => entry.location.symbol === 'pad');
+    expect(pad?.location.snippet).toBe('100000');
+    expect(pad?.description).toMatch(/uses 1 bare numeric literal\(s\)/);
+
+    for (const needle of ['%010d', ' 010;', '0.005', '0.25']) {
+      expect(magic.some((entry) => entry.description.includes(needle)), `description leaked ${JSON.stringify(needle)}`).toBe(false);
+      expect(
+        magic.some((entry) => entry.location.snippet?.includes(needle)),
+        `snippet leaked ${JSON.stringify(needle)}`,
+      ).toBe(false);
+    }
   });
 
   it('marks nondeterministic external dependencies', () => {

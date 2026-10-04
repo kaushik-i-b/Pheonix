@@ -18,6 +18,7 @@
   "dependencies": {
     "zod": "^3.24.1",
     "@phoenix/shared": "workspace:*",
+    "@phoenix/characterization": "workspace:*",
     "@phoenix/artifact-store": "workspace:*"
   },
   "devDependencies": {

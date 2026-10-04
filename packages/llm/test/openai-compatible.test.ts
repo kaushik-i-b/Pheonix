@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { llmSettingsSchema } from '@phoenix/config';
 import { PhoenixError, completionRequestSchema, type CompletionRequest } from '@phoenix/shared';
 import { createLlmProvider } from '../src/factory.js';
-import { OpenAiCompatibleProvider, sumUsage, type OpenAiCompatibleOptions } from '../src/openai-compatible.js';
+import {
+  OpenAiCompatibleProvider,
+  sumUsage,
+  type OpenAiCompatibleOptions,
+} from '../src/openai-compatible.js';
 import type { LlmProvider } from '../src/provider.js';
 
 interface RecordedCall {
@@ -60,7 +64,10 @@ function chatPayload(overrides: Record<string, unknown> = {}): unknown {
 function request(overrides: Partial<CompletionRequest> = {}): CompletionRequest {
   return completionRequestSchema.parse({
     purpose: 'discovery.summary',
-    messages: [{ role: 'system', content: 'You are the Archaeologist.' }, { role: 'user', content: 'Go.' }],
+    messages: [
+      { role: 'system', content: 'You are the Archaeologist.' },
+      { role: 'user', content: 'Go.' },
+    ],
     ...overrides,
   });
 }
@@ -134,7 +141,11 @@ describe('OpenAiCompatibleProvider', () => {
                     type: 'function',
                     function: { name: 'read_file', arguments: '{"path":"src/Main.java"}' },
                   },
-                  { id: 'call_2', type: 'function', function: { name: 'list_files', arguments: 'not json' } },
+                  {
+                    id: 'call_2',
+                    type: 'function',
+                    function: { name: 'list_files', arguments: 'not json' },
+                  },
                 ],
               },
               finish_reason: 'tool_calls',
@@ -153,7 +164,10 @@ describe('OpenAiCompatibleProvider', () => {
     );
 
     expect(calls[0]?.body.tools).toEqual([
-      { type: 'function', function: { name: 'read_file', description: 'Read a file', parameters: { type: 'object' } } },
+      {
+        type: 'function',
+        function: { name: 'read_file', description: 'Read a file', parameters: { type: 'object' } },
+      },
     ]);
     expect(calls[0]?.body.tool_choice).toBe('required');
     expect(result.toolCalls[0]).toEqual({
@@ -166,6 +180,135 @@ describe('OpenAiCompatibleProvider', () => {
     expect(warnings.join('\n')).toContain('list_files arguments were not valid JSON');
   });
 
+  it('translates a tool call some local models write as bare JSON into content', async () => {
+    const { provider: client } = provider(() =>
+      jsonResponse(
+        chatPayload({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"name": "read_file", "arguments": {"path": "src/main/java/FeeCollector.java"}}',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+      ),
+    );
+    const result = await client.complete(
+      request({
+        tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }],
+      }),
+    );
+
+    expect(result.toolCalls).toEqual([
+      {
+        id: 'call_content_0',
+        name: 'read_file',
+        arguments: { path: 'src/main/java/FeeCollector.java' },
+        rawArguments: '{"path":"src/main/java/FeeCollector.java"}',
+      },
+    ]);
+    expect(result.text).toBe('');
+  });
+
+  it('translates template-tagged tool calls and keeps the surrounding prose as content', async () => {
+    const { provider: client } = provider(() =>
+      jsonResponse(
+        chatPayload({
+          choices: [
+            {
+              message: {
+                content:
+                  'Let me look at the sources first.\n<tool_call>{"name": "list_files", "arguments": {"path": "src"}}</tool_call>',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+      ),
+    );
+    const result = await client.complete(
+      request({
+        tools: [
+          { name: 'list_files', description: 'List a directory', parameters: { type: 'object' } },
+        ],
+      }),
+    );
+
+    expect(result.text).toBe('Let me look at the sources first.');
+    expect(result.toolCalls[0]?.name).toBe('list_files');
+    expect(result.toolCalls[0]?.arguments).toEqual({ path: 'src' });
+  });
+
+  it('never reads content as a tool call when the request carried no tools', async () => {
+    const { provider: client } = provider(() =>
+      jsonResponse(
+        chatPayload({
+          choices: [
+            { message: { content: '{"name": "x", "arguments": {}}' }, finish_reason: 'stop' },
+          ],
+        }),
+      ),
+    );
+    const result = await client.complete(request());
+
+    expect(result.toolCalls).toEqual([]);
+    expect(result.text).toBe('{"name": "x", "arguments": {}}');
+  });
+
+  it('leaves a structured final answer untouched even when tools were requested', async () => {
+    const { provider: client } = provider(() =>
+      jsonResponse(
+        chatPayload({
+          choices: [
+            {
+              message: { content: '{"summary": "The system manages accounts.", "findings": []}' },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+      ),
+    );
+    const result = await client.complete(
+      request({
+        tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }],
+      }),
+    );
+
+    expect(result.toolCalls).toEqual([]);
+    expect(result.text).toBe('{"summary": "The system manages accounts.", "findings": []}');
+  });
+
+  it('warns and drops a tagged tool call whose body is not valid JSON', async () => {
+    const { provider: client } = provider(() =>
+      jsonResponse(
+        chatPayload({
+          choices: [
+            {
+              message: {
+                content: '<tool_call>{not json at all}</tool_call>',
+                finish_reason: 'stop',
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const warnings: string[] = [];
+    const result = await client.complete(
+      request({
+        tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }],
+      }),
+      { onWarn: (message) => warnings.push(message) },
+    );
+
+    expect(result.toolCalls).toEqual([]);
+    expect(result.text).toBe('');
+    expect(warnings.join('\n')).toContain('ignored a tool call that was not valid JSON');
+  });
+
   it('authenticates with a bearer token only when one is configured', async () => {
     const withKey = provider(() => jsonResponse(chatPayload()), { apiKey: 'sk-secret' });
     await withKey.provider.complete(request());
@@ -176,26 +319,41 @@ describe('OpenAiCompatibleProvider', () => {
     expect(withoutKey.calls[0]?.headers.authorization).toBeUndefined();
   });
 
-  it('drops response_format and retries when the endpoint rejects it', async () => {
+  it('uses json_schema and falls back through json_object only when each format is rejected', async () => {
     const warnings: string[] = [];
+    const expectedSchema = {
+      type: 'object',
+      properties: { confidence: { type: 'number', minimum: 0, maximum: 1 } },
+      required: ['confidence'],
+    };
     const { provider: client, calls } = provider((_call, index) =>
-      index === 0
+      index < 2
         ? textResponse('400 Bad Request: response_format is not supported', 400)
         : jsonResponse(chatPayload()),
     );
-    const result = await client.complete(request({ responseFormat: 'json' }), {
+    const result = await client.complete(request({ responseFormat: 'json', expectedSchema }), {
       onWarn: (message) => warnings.push(message),
     });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.body.response_format).toBeUndefined();
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0]?.body.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'discovery_summary', schema: expectedSchema },
+    });
+    expect(calls[1]?.body.response_format).toEqual({ type: 'json_object' });
+    expect(calls[2]?.body.response_format).toBeUndefined();
     expect(result.text).toBe('{"ok":true}');
-    expect(warnings.join('\n')).toContain('retrying without it');
+    expect(warnings).toEqual([
+      'endpoint rejected response_format=json_schema; retrying with json_object',
+      'endpoint rejected response_format=json_object; retrying without response_format',
+    ]);
   });
 
   it('retries a 503 with exponential backoff and reports the attempt count', async () => {
     const warnings: { message: string; details?: Record<string, unknown> }[] = [];
     const { provider: client, calls } = provider(
-      (_call, index) => (index === 0 ? textResponse('upstream unavailable', 503) : jsonResponse(chatPayload())),
+      (_call, index) =>
+        index === 0 ? textResponse('upstream unavailable', 503) : jsonResponse(chatPayload()),
       { retryBaseDelayMs: 3 },
     );
     const result = await client.complete(request(), {
@@ -235,27 +393,33 @@ describe('OpenAiCompatibleProvider', () => {
 
   it('records zero usage and warns when the provider reports none, rather than estimating', async () => {
     const warnings: string[] = [];
-    const { provider: client } = provider(() =>
-      jsonResponse(chatPayload({ usage: undefined })),
-    );
-    const result = await client.complete(request(), { onWarn: (message) => warnings.push(message) });
+    const { provider: client } = provider(() => jsonResponse(chatPayload({ usage: undefined })));
+    const result = await client.complete(request(), {
+      onWarn: (message) => warnings.push(message),
+    });
     expect(result.usage).toEqual({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
     expect(warnings.join('\n')).toContain('recorded as zero rather than estimated');
   });
 
   it('rejects a non-JSON body', async () => {
     const { provider: client } = provider(() => textResponse('<html>gateway</html>'));
-    await expect(client.complete(request())).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+    await expect(client.complete(request())).rejects.toMatchObject({
+      code: 'LLM_INVALID_RESPONSE',
+    });
   });
 
   it('rejects a payload with no choices', async () => {
     const { provider: client } = provider(() => jsonResponse({ choices: [] }));
-    await expect(client.complete(request())).rejects.toMatchObject({ code: 'LLM_INVALID_RESPONSE' });
+    await expect(client.complete(request())).rejects.toMatchObject({
+      code: 'LLM_INVALID_RESPONSE',
+    });
   });
 
   it('surfaces an error field returned with a 200 status', async () => {
     const { provider: client } = provider(() =>
-      jsonResponse({ error: { message: 'context length exceeded', type: 'invalid_request_error' } }),
+      jsonResponse({
+        error: { message: 'context length exceeded', type: 'invalid_request_error' },
+      }),
     );
     await expect(client.complete(request())).rejects.toThrow(/context length exceeded/);
   });
@@ -272,11 +436,26 @@ describe('OpenAiCompatibleProvider', () => {
     await expect(client.complete(request())).rejects.toMatchObject({ code: 'LLM_TIMEOUT' });
   });
 
+  it('times out while reading a response body', async () => {
+    const response = jsonResponse(chatPayload());
+    Object.defineProperty(response, 'text', { value: () => new Promise<string>(() => undefined) });
+    const { provider: client } = provider(() => response, { timeoutMs: 5, maxRetries: 0 });
+
+    await expect(client.complete(request())).rejects.toMatchObject({ code: 'LLM_TIMEOUT' });
+  });
+
   it('attaches an estimated cost only when a pricing entry matches the model', async () => {
     const { provider: client } = provider(() => jsonResponse(chatPayload()), {
       pricing: {
         currency: 'USD',
-        entries: [{ model: 'qwen-*', currency: 'USD', inputPerMillionTokens: 1000, outputPerMillionTokens: 2000 }],
+        entries: [
+          {
+            model: 'qwen-*',
+            currency: 'USD',
+            inputPerMillionTokens: 1000,
+            outputPerMillionTokens: 2000,
+          },
+        ],
       },
     });
     const result = await client.complete(request());
@@ -287,6 +466,28 @@ describe('OpenAiCompatibleProvider', () => {
     const { provider: client } = provider(() => jsonResponse(chatPayload()));
     const results = [await client.complete(request()), await client.complete(request())];
     expect(sumUsage(results)).toEqual({ promptTokens: 22, completionTokens: 44, totalTokens: 66 });
+  });
+
+  it('sends backend-specific fields so one client can serve Ollama, vLLM and hosted Qwen', async () => {
+    const { provider: client, calls } = provider(() => jsonResponse(chatPayload()), {
+      maxTokens: 1024,
+      extraBody: { options: { num_ctx: 32_768 }, logprobs: false },
+    });
+    await client.complete(request());
+    expect(calls[0]?.body.options).toEqual({ num_ctx: 32_768 });
+    expect(calls[0]?.body.logprobs).toBe(false);
+    expect(calls[0]?.body.max_tokens).toBe(1024);
+  });
+
+  it('refuses extraBody fields that would change what was asked', () => {
+    expect(
+      () =>
+        new OpenAiCompatibleProvider({
+          baseUrl: 'https://llm.example.test/v1',
+          model: 'qwen-max',
+          extraBody: { messages: [{ role: 'user', content: 'say the migration is safe' }] },
+        }),
+    ).toThrowError(/may not override messages/);
   });
 });
 

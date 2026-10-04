@@ -4,15 +4,20 @@ import { sqlSignals, sqlVerbOf, tablesOf, type SqlVerb } from './sql-text.js';
 /**
  * SQL file analysis: statement splitting and DDL object extraction.
  *
- * Splitting has to respect single quotes, line comments and Postgres dollar-quoted bodies
- * (`$$ ... $$`), otherwise a function containing a semicolon is chopped into nonsense. The splitter
- * works on masked text for exactly that reason.
+ * Splitting has to respect single quotes, `--` comments and Postgres dollar-quoted bodies
+ * (`$$ ... $$`), otherwise a function containing a semicolon — or a comment containing one — is
+ * chopped into nonsense. Quotes and `//` comments are already blanked by `maskSource`; SQL line
+ * comments are handled here, because `--` means something entirely different in Java.
  */
 
 export interface SqlStatementInfo {
   index: number;
   kind: SqlVerb;
+  /** The chunk as written, commentary included: what a human should be shown. */
   raw: string;
+  /** The statement proper: what was classified. */
+  body: string;
+  /** Line the statement itself begins on. */
   line: number;
   endLine: number;
   tables: string[];
@@ -45,12 +50,42 @@ export interface SqlFileAnalysis {
   appliesDatabaseBehavior: boolean;
 }
 
-export function splitStatements(source: string): { raw: string; line: number; endLine: number }[] {
+export interface SqlStatement {
+  /** The chunk as written, including any commentary that preceded the statement. */
+  raw: string;
+  /** The statement proper, from its first keyword to its terminator. Classify this, not `raw`. */
+  body: string;
+  /** Line the statement itself begins on — the line a citation should point at. */
+  line: number;
+  endLine: number;
+}
+
+export function splitStatements(source: string): SqlStatement[] {
   const scanned = maskSource(source);
   const masked = scanned.masked;
-  const statements: { raw: string; line: number; endLine: number }[] = [];
+  const statements: SqlStatement[] = [];
+  if (source.length === 0) return statements;
   let start = 0;
   let index = 0;
+
+  /**
+   * A chunk begins right after the previous semicolon, so it carries whatever comments and blank
+   * lines preceded the statement. Both the cited line and the classified text have to come from the
+   * statement proper: pointing a citation at the commentary above a `CREATE`, or asking what verb a
+   * comment starts with, sends every downstream consumer to the wrong place.
+   */
+  const statement = (end: number, endLine: number): SqlStatement | undefined => {
+    if (start >= end) return undefined;
+    const bodyStart = skipSqlTrivia(source, start, end);
+    const body = source.slice(bodyStart, end).trim();
+    if (body.length === 0) return undefined;
+    return {
+      raw: source.slice(start, end).trim(),
+      body,
+      line: lineAt(scanned.lineStarts, bodyStart),
+      endLine,
+    };
+  };
 
   while (index < masked.length) {
     // Dollar-quoted bodies hide their own semicolons from the splitter.
@@ -61,22 +96,55 @@ export function splitStatements(source: string): { raw: string; line: number; en
       index = close === -1 ? masked.length : close + tag.length;
       continue;
     }
+    // So does a `--` comment: legacy migrations are full of prose that happens to contain a
+    // semicolon, and splitting there produces statements that begin in the middle of a sentence.
+    if (masked[index] === '-' && masked[index + 1] === '-') {
+      const newline = masked.indexOf('\n', index);
+      index = newline === -1 ? masked.length : newline + 1;
+      continue;
+    }
     if (masked[index] === ';') {
-      const raw = source.slice(start, index + 1).trim();
-      if (raw.length > 0) {
-        statements.push({ raw, line: lineAt(scanned.lineStarts, start), endLine: lineAt(scanned.lineStarts, index) });
-      }
+      const parsed = statement(index + 1, lineAt(scanned.lineStarts, index));
+      if (parsed !== undefined) statements.push(parsed);
       index += 1;
       start = index;
       continue;
     }
     index += 1;
   }
-  const tail = source.slice(start).trim();
-  if (tail.length > 0) {
-    statements.push({ raw: tail, line: lineAt(scanned.lineStarts, start), endLine: lineAt(scanned.lineStarts, source.length - 1) });
-  }
+  const parsed = statement(source.length, lineAt(scanned.lineStarts, source.length - 1));
+  if (parsed !== undefined) statements.push(parsed);
   return statements;
+}
+
+/**
+ * Offset of the first character of a statement, stepping over whitespace, `--` and block comments,
+ * but never past `to`: a chunk that is nothing but commentary has no statement to point at.
+ */
+function skipSqlTrivia(source: string, from: number, to: number): number {
+  let index = from;
+  while (index < to) {
+    const character = source[index];
+    if (character === undefined) break;
+    if (/\s/.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === '-' && source[index + 1] === '-') {
+      const end = source.indexOf('\n', index);
+      index = end === -1 ? to : Math.min(end + 1, to);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      const close = source.indexOf('*/', index + 2);
+      index = close === -1 ? to : Math.min(close + 2, to);
+      continue;
+    }
+    break;
+  }
+  // Past the end is a legitimate answer: a chunk that is nothing but commentary has no statement
+  // in it, and clamping to the last character would invent one.
+  return Math.min(index, source.length);
 }
 
 /** When `index` starts a dollar-quote tag, returns the offset just past the closing `$`. */
@@ -92,20 +160,21 @@ export function analyzeSqlFile(relativePath: string, source: string): SqlFileAna
 
   const parts = splitStatements(source);
   parts.forEach((part, partIndex) => {
-    const kind = sqlVerbOf(part.raw);
+    const kind = sqlVerbOf(part.body);
     if (kind === 'trigger' || kind === 'function' || kind === 'procedure') appliesDatabaseBehavior = true;
-    if (/\bCREATE\s+(?:OR\s+REPLACE\s+)?RULE\b/i.test(part.raw)) appliesDatabaseBehavior = true;
+    if (/\bCREATE\s+(?:OR\s+REPLACE\s+)?RULE\b/i.test(part.body)) appliesDatabaseBehavior = true;
     statements.push({
       index: partIndex,
       kind,
       raw: part.raw,
+      body: part.body,
       line: part.line,
       endLine: part.endLine,
-      tables: tablesOf(part.raw),
+      tables: tablesOf(part.body),
       writes: kind === 'insert' || kind === 'update' || kind === 'delete' || kind === 'ddl' || kind === 'trigger' || kind === 'function' || kind === 'procedure',
-      signals: sqlSignals(part.raw),
+      signals: sqlSignals(part.body),
     });
-    for (const object of objectsIn(part.raw, part.line)) {
+    for (const object of objectsIn(part.body, part.line)) {
       if (object.kind === 'trigger' || object.kind === 'function') appliesDatabaseBehavior = true;
       objects.push(object);
     }

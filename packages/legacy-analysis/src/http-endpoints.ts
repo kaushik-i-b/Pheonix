@@ -82,7 +82,9 @@ export function extractWebLayer(file: JavaFile): WebLayerExtraction {
         const responseStatus = method.annotations.find((entry) => entry.name === 'ResponseStatus');
         const anomalies: string[] = [];
         if (responseStatus !== undefined && NON_SUCCESS_STATUS.test(responseStatus.arguments)) {
-          anomalies.push(`declares non-success status ${responseStatus.arguments}`);
+          // The declared status value stays out of the anomaly: it is source text, and an index that
+          // quotes it lets a reader assert the handler's behavior without opening the file.
+          anomalies.push('declares a non-success HTTP status on the handler');
         }
         if (/\bResponseEntity\b/.test(method.returnType) && NON_SUCCESS_STATUS.test(method.body)) {
           anomalies.push('handler builds an error status inside its body');
