@@ -164,7 +164,12 @@ export type ScenarioSet = z.infer<typeof scenarioSetSchema>;
 export const stepOutcomeSchema = z.object({
   stepId: z.string().min(1),
   kind: scenarioStepSchema.shape.kind,
-  status: z.enum(['ok', 'failed', 'skipped', 'error', 'timeout']),
+  /**
+   * `error` means the step was attempted and the attempt went wrong inside the executor; `unreachable`
+   * means the target never answered at all. Keeping them apart is what lets a run report "the legacy
+   * system was not up" instead of blaming the scenario.
+   */
+  status: z.enum(['ok', 'failed', 'skipped', 'error', 'timeout', 'unreachable']),
   durationMs: z.number().int().nonnegative(),
   httpStatus: z.number().int().nonnegative().optional(),
   responseHeaders: z.record(z.string(), z.string()).default({}),

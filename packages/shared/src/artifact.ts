@@ -42,6 +42,7 @@ export const artifactKindSchema = z.enum([
   'agent.task',
   'agent.result',
   'agent.transcript',
+  'agent.tool-log',
   'run.record',
   'run.events',
   'run.prompt',
@@ -77,6 +78,7 @@ export const ARTIFACT_STAGE_DIRECTORY: Record<ArtifactKind, string> = {
   'agent.task': 'agent',
   'agent.result': 'agent',
   'agent.transcript': 'agent',
+  'agent.tool-log': 'agent',
   'run.record': 'run',
   'run.events': 'run',
   'run.prompt': 'run',
@@ -125,22 +127,6 @@ export const artifactMetaSchema = z.object({
 });
 export type ArtifactMeta = z.infer<typeof artifactMetaSchema>;
 
-/**
- * JSON artifacts are wrapped in an envelope so provenance travels with the payload even if
- * the file is copied out of the artifact tree.
- */
-export function artifactEnvelopeSchema<TPayload extends z.ZodTypeAny>(payloadSchema: TPayload) {
-  return z.object({
-    envelopeVersion: z.literal(ARTIFACT_SCHEMA_VERSION),
-    kind: artifactKindSchema,
-    runId: runIdSchema,
-    createdAt: isoTimestampSchema,
-    producedBy: artifactProducerSchema,
-    inputs: z.array(artifactInputRefSchema).default([]),
-    payload: payloadSchema,
-  });
-}
-
 export type ArtifactEnvelope<TPayload> = {
   envelopeVersion: typeof ARTIFACT_SCHEMA_VERSION;
   kind: ArtifactKind;
@@ -150,6 +136,25 @@ export type ArtifactEnvelope<TPayload> = {
   inputs: ArtifactInputRef[];
   payload: TPayload;
 };
+
+/**
+ * JSON artifacts are wrapped in an envelope so provenance travels with the payload even if
+ * the file is copied out of the artifact tree.
+ */
+export function artifactEnvelopeSchema<TPayload>(
+  payloadSchema: z.ZodType<TPayload>,
+): z.ZodType<ArtifactEnvelope<TPayload>, z.ZodTypeDef, unknown> {
+  const schema = z.object({
+    envelopeVersion: z.literal(ARTIFACT_SCHEMA_VERSION),
+    kind: artifactKindSchema,
+    runId: runIdSchema,
+    createdAt: isoTimestampSchema,
+    producedBy: artifactProducerSchema,
+    inputs: z.array(artifactInputRefSchema).default([]),
+    payload: payloadSchema,
+  });
+  return schema as unknown as z.ZodType<ArtifactEnvelope<TPayload>, z.ZodTypeDef, unknown>;
+}
 
 /** Canonical file name for singleton artifacts of a kind (multi-instance kinds pass a slug). */
 export const ARTIFACT_BASENAME: Partial<Record<ArtifactKind, string>> = {
@@ -165,7 +170,7 @@ export const ARTIFACT_BASENAME: Partial<Record<ArtifactKind, string>> = {
   'design.architecture': 'architecture.md',
   'design.migration-plan': 'migration-plan.md',
   'design.risk-register': 'risk-register.json',
-  'implementation.change-report': 'change-report.md',
+  'implementation.change-report': 'change-report.json',
   'adversarial.scenarios': 'scenarios.json',
   'adversarial.report': 'report.json',
   'verification.differential-report': 'differential-report.json',
@@ -192,8 +197,10 @@ export function defaultRelativePath(kind: ArtifactKind, slug?: string, format?: 
   if (base === undefined) {
     throw new Error(`no default file name for artifact kind "${kind}"; pass an explicit slug`);
   }
-  const safeBase = slug === undefined ? base : `${sanitizeSlug(slug)}${extensionOf(kind, base, format)}`;
-  return `${directory}/${safeBase}`;
+  if (slug === undefined) return `${directory}/${base}`;
+  const safeBase = sanitizeSlug(slug);
+  const extension = extensionOf(kind, safeBase, format);
+  return `${directory}/${safeBase.endsWith(extension) ? safeBase : `${safeBase}${extension}`}`;
 }
 
 function extensionOf(kind: ArtifactKind, base: string, format?: ArtifactFormat): string {

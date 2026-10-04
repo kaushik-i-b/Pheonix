@@ -222,6 +222,10 @@ export const toolInvocationSchema = z.object({
 });
 export type ToolInvocation = z.infer<typeof toolInvocationSchema>;
 
+/** The durable tool audit trail of one task, persisted as an `agent.tool-log` artifact. */
+export const toolInvocationLogSchema = z.array(toolInvocationSchema);
+export type ToolInvocationLog = z.infer<typeof toolInvocationLogSchema>;
+
 /** A tool call as requested by the model. */
 export const toolCallRequestSchema = z.object({
   id: z.string().min(1),

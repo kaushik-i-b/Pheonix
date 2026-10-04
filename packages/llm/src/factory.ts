@@ -37,6 +37,7 @@ export function createLlmProvider(options: CreateProviderOptions): LlmProvider {
     timeoutMs: settings.timeoutMs,
     maxRetries: settings.maxRetries,
     ...(settings.apiKey !== undefined ? { apiKey: settings.apiKey } : {}),
+    ...(settings.extraBody !== undefined ? { extraBody: settings.extraBody } : {}),
     ...(pricing !== undefined ? { pricing } : {}),
     ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.headers !== undefined ? { headers: options.headers } : {}),

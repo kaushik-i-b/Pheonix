@@ -64,6 +64,12 @@ export const completionResultSchema = z.object({
   providerId: z.string().min(1),
   model: z.string().min(1),
   text: z.string(),
+  /**
+   * The model's separate reasoning channel, when the endpoint exposes one (Ollama's `reasoning`,
+   * some gateways' `reasoning_content`). Kept because it is the only evidence of *why* a reasoning
+   * model answered what it did — and because when the answer is missing, it is all there is.
+   */
+  reasoningText: z.string().max(400_000).optional(),
   toolCalls: z.array(llmToolCallSchema).default([]),
   usage: tokenUsageSchema,
   finishReason: z.string().max(64).optional(),

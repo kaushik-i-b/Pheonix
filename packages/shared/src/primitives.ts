@@ -31,7 +31,9 @@ export const CASE_ID_PATTERN = /^CHR-[A-Z0-9-]{1,40}$/;
 export const ARTIFACT_ID_PATTERN = /^art_[0-9a-f]{64}$/;
 export const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 
-export const runIdSchema = z.string().regex(RUN_ID_PATTERN, 'expected run_<32 lowercase alphanumerics>');
+export const runIdSchema = z
+  .string()
+  .regex(RUN_ID_PATTERN, 'expected run_<32 lowercase alphanumerics>');
 export const taskIdSchema = z.string().regex(TASK_ID_PATTERN);
 export const stepIdSchema = z.string().regex(STEP_ID_PATTERN);
 export const scenarioIdSchema = z.string().regex(SCENARIO_ID_PATTERN);
@@ -204,7 +206,15 @@ export function maxSeverity(values: readonly Severity[]): Severity {
 export const epistemicStatusSchema = z.enum(['OBSERVED', 'INFERRED', 'UNKNOWN']);
 export type EpistemicStatus = z.infer<typeof epistemicStatusSchema>;
 
-export const confidenceSchema = z.number().min(0).max(1);
+const CONFIDENCE_REQUIREMENT = 'expected a required JSON number from 0 through 1 inclusive';
+export const confidenceSchema = z
+  .number({
+    required_error: CONFIDENCE_REQUIREMENT,
+    invalid_type_error: CONFIDENCE_REQUIREMENT,
+  })
+  .min(0, CONFIDENCE_REQUIREMENT)
+  .max(1, CONFIDENCE_REQUIREMENT)
+  .describe('Required confidence as a JSON number from 0 through 1 inclusive.');
 export type Confidence = z.infer<typeof confidenceSchema>;
 
 export const confidenceBandSchema = z.enum(['HIGH', 'MEDIUM', 'LOW', 'NONE']);

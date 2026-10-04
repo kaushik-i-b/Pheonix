@@ -188,6 +188,40 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.4)(supports-color@7.2.0)
 
+  apps/cli:
+    dependencies:
+      '@phoenix/artifact-store':
+        specifier: workspace:*
+        version: link:../../packages/artifact-store
+      '@phoenix/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@phoenix/differential-testing':
+        specifier: workspace:*
+        version: link:../../packages/differential-testing
+      '@phoenix/legacy-analysis':
+        specifier: workspace:*
+        version: link:../../packages/legacy-analysis
+      '@phoenix/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+      '@phoenix/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.4
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.4)(supports-color@7.2.0)
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
   packages/adversarial-testing:
     dependencies:
       '@phoenix/differential-testing':
@@ -230,6 +264,9 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+      zod-to-json-schema:
+        specifier: ^3.25.2
+        version: 3.25.2(zod@3.25.76)
     devDependencies:
       '@types/node':
         specifier: ^22.10.2
@@ -306,6 +343,9 @@ importers:
       '@phoenix/artifact-store':
         specifier: workspace:*
         version: link:../artifact-store
+      '@phoenix/characterization':
+        specifier: workspace:*
+        version: link:../characterization
       '@phoenix/shared':
         specifier: workspace:*
         version: link:../shared
@@ -1705,6 +1745,11 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zod-to-json-schema@3.25.2:
+    resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
+    peerDependencies:
+      zod: ^3.25.28 || ^4
+
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
@@ -2727,5 +2772,9 @@ snapshots:
   xtend@4.0.2: {}
 
   yocto-queue@0.1.0: {}
+
+  zod-to-json-schema@3.25.2(zod@3.25.76):
+    dependencies:
+      zod: 3.25.76
 
   zod@3.25.76: {}

@@ -88,6 +88,8 @@ function parseFrontMatter(text: string, sourcePath: string): FrontMatter {
         break;
       case 'requiredVariables':
         result.requiredVariables = value
+          .replace(/^\[/, '')
+          .replace(/\]$/, '')
           .split(',')
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0);

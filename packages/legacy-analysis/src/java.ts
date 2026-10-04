@@ -166,7 +166,8 @@ export function analyzeJavaFile(relativePath: string, source: string): JavaFile 
 
   const types: JavaTypeDeclaration[] = [];
   for (const match of masked.matchAll(TYPE_PATTERN)) {
-    const start = match.index ?? 0;
+    const matchStart = match.index ?? 0;
+    const start = declarationStart(masked, matchStart);
     const kindRaw = match[2];
     const name = match[3];
     if (kindRaw === undefined || name === undefined) continue;
@@ -190,14 +191,15 @@ export function analyzeJavaFile(relativePath: string, source: string): JavaFile 
   const methods: JavaMethod[] = [];
   const consumed = new Set<number>();
   for (const match of masked.matchAll(METHOD_PATTERN)) {
-    const start = match.index ?? 0;
+    const matchStart = match.index ?? 0;
+    const start = declarationStart(masked, matchStart);
     const modifiersRaw = match[1] ?? '';
     const returnType = (match[2] ?? '').trim();
     const name = match[3] ?? '';
     if (name.length === 0 || MODIFIER_PATTERN.test(name)) continue;
     // `return foo(...)` and `throw new Foo(...)` look like declarations to a line-anchored pattern.
     if (NON_TYPE_TOKENS.has(returnType.replace(/\s+/g, ''))) continue;
-    const openParen = masked.indexOf('(', start + match[0].length - 1);
+    const openParen = masked.indexOf('(', matchStart + match[0].length - 1);
     const method = readSignature(masked, scanned, start, openParen, modifiersRaw, returnType, name, 'method');
     if (method === undefined) continue;
     consumed.add(method.line);
@@ -205,12 +207,13 @@ export function analyzeJavaFile(relativePath: string, source: string): JavaFile 
   }
 
   for (const match of masked.matchAll(CONSTRUCTOR_PATTERN)) {
-    const start = match.index ?? 0;
+    const matchStart = match.index ?? 0;
+    const start = declarationStart(masked, matchStart);
     const name = match[2] ?? '';
     if (!typeNames.has(name)) continue;
     const line = lineOf(scanned, start);
     if (consumed.has(line)) continue;
-    const openParen = masked.indexOf('(', start + match[0].length - 1);
+    const openParen = masked.indexOf('(', matchStart + match[0].length - 1);
     const method = readSignature(masked, scanned, start, openParen, match[1] ?? '', name, name, 'constructor');
     if (method === undefined) continue;
     methods.push(method);
@@ -219,14 +222,15 @@ export function analyzeJavaFile(relativePath: string, source: string): JavaFile 
 
   const fields: JavaField[] = [];
   for (const match of masked.matchAll(FIELD_PATTERN)) {
-    const start = match.index ?? 0;
+    const matchStart = match.index ?? 0;
+    const start = declarationStart(masked, matchStart);
     const modifiersRaw = match[1] ?? '';
     const modifiers = splitModifiers(modifiersRaw);
     const type = (match[2] ?? '').trim();
     const name = match[3] ?? '';
     if (name.length === 0 || !/^[A-Za-z_$]/.test(name)) continue;
     if (type.length === 0 || NON_TYPE_TOKENS.has(type)) continue;
-    const initializer = fieldInitializer(source, masked, start, start + match[0].length);
+    const initializer = fieldInitializer(source, masked, matchStart, matchStart + match[0].length);
     fields.push({
       name,
       line: lineOf(scanned, start),
@@ -333,11 +337,26 @@ function enclosingType(masked: string, offset: number): string | undefined {
  * then taken from the *real* source at the same offsets — annotation arguments are almost always
  * literals (`@PostMapping("/api/accounts")`), which masking blanks out.
  */
+/**
+ * Offset of a declaration's first real character.
+ *
+ * Every declaration pattern is anchored with `(?:^|\n)[ \t]*`, so `match.index` sits on the newline
+ * *above* the declaration. Citing that offset puts every method, field and type one line early —
+ * usually on a blank line — and a citation that points at nothing is worse than no citation.
+ */
+function declarationStart(masked: string, matchStart: number): number {
+  let index = matchStart;
+  while (index < masked.length && /[\s]/.test(masked[index] ?? '')) index += 1;
+  return index;
+}
+
 function annotationsBefore(scanned: MaskedSource, start: number): JavaAnnotation[] {
   const masked = scanned.masked;
   const annotations: JavaAnnotation[] = [];
-  // Walk backwards over the preceding lines while they are annotation lines.
-  let cursor = start;
+  // Walk backwards over the preceding lines while they are annotation lines. `cursor` is the offset
+  // of the newline that ends the line above the declaration, which is what the slice below expects;
+  // starting from the declaration itself would read its own indentation as the previous line.
+  let cursor = Math.max(0, masked.lastIndexOf('\n', Math.max(0, start - 1)));
   for (;;) {
     const lineStart = masked.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1;
     const lineTextValue = masked.slice(lineStart, cursor).trim();

@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@phoenix/shared": ["./packages/shared/dist/index.d.ts"],
+      "@phoenix/config": ["./packages/config/dist/index.d.ts"],
+      "@phoenix/llm": ["./packages/llm/dist/index.d.ts"],
+      "@phoenix/llm/testing": ["./packages/llm/dist/mock.d.ts"],
+      "@phoenix/artifact-store": ["./packages/artifact-store/dist/index.d.ts"],
+      "@phoenix/execution-sandbox": ["./packages/execution-sandbox/dist/index.d.ts"],
+      "@phoenix/repository-tools": ["./packages/repository-tools/dist/index.d.ts"],
+      "@phoenix/agent-runtime": ["./packages/agent-runtime/dist/index.d.ts"],
+      "@phoenix/legacy-analysis": ["./packages/legacy-analysis/dist/index.d.ts"],
+      "@phoenix/specification": ["./packages/specification/dist/index.d.ts"],
+      "@phoenix/characterization": ["./packages/characterization/dist/index.d.ts"],
+      "@phoenix/differential-testing": ["./packages/differential-testing/dist/index.d.ts"],
+      "@phoenix/adversarial-testing": ["./packages/adversarial-testing/dist/index.d.ts"],
+      "@phoenix/verification": ["./packages/verification/dist/index.d.ts"],
+      "@phoenix/orchestrator": ["./packages/orchestrator/dist/index.d.ts"]
+    }
+  }
+}

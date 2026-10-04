@@ -100,7 +100,14 @@ export function detectSuspicious(input: SuspiciousInput): SuspiciousBehavior[] {
 
       const timeHit = TIME_DEPENDENCE.find((pattern) => pattern.test(method.body));
       if (timeHit !== undefined) {
-        push('time-dependence', `${method.name} depends on the current time or randomness: ${firstMatchLine(method.body, timeHit)}`, location, 'differential-scenario');
+        // The matching line is evidence, not orientation: it goes in the snippet the artifact keeps,
+        // never in prose that the discovery digest would hand to a model as though it had read it.
+        push(
+          'time-dependence',
+          `${method.name} depends on the current time or randomness`,
+          { ...location, snippet: firstMatchLine(method.body, timeHit) },
+          'differential-scenario',
+        );
       }
 
       if (MANUAL_TRANSACTION.test(method.body)) {
@@ -129,11 +136,14 @@ export function detectSuspicious(input: SuspiciousInput): SuspiciousBehavior[] {
         push('unchecked-cast', `${method.name} suppresses unchecked-cast warnings`, location, 'record-risk');
       }
 
-      for (const magic of magicNumbersIn(method.body)) {
+      const magics = magicNumbersIn(method.body);
+      if (magics.length > 0) {
+        // One entry per method, literals in the snippet: the count orients a reader, the values are
+        // something the reader has to go and look at in the file itself.
         push(
           'magic-number',
-          `${method.name} uses the bare literal ${magic}; the threshold it encodes has no name`,
-          { path: file.relativePath, startLine: method.line, symbol: method.name },
+          `${method.name} uses ${magics.length} bare numeric literal(s); the threshold(s) they encode have no name`,
+          { path: file.relativePath, startLine: method.line, symbol: method.name, snippet: magics.join(', ') },
           'characterize',
         );
       }
@@ -143,8 +153,12 @@ export function detectSuspicious(input: SuspiciousInput): SuspiciousBehavior[] {
       if (!MISLEADING_COMMENT.test(comment.text)) continue;
       push(
         'misleading-comment',
-        `comment carries a warning or unfinished-work marker: ${comment.text.replace(/\s+/g, ' ').trim().slice(0, 200)}`,
-        { path: file.relativePath, startLine: comment.line },
+        'comment carries a warning or unfinished-work marker',
+        {
+          path: file.relativePath,
+          startLine: comment.line,
+          snippet: comment.text.replace(/\s+/g, ' ').trim().slice(0, 2000),
+        },
         'record-risk',
       );
     }
@@ -153,8 +167,8 @@ export function detectSuspicious(input: SuspiciousInput): SuspiciousBehavior[] {
     if (clockHit !== null) {
       push(
         'time-dependence',
-        `${file.relativePath} embeds SQL that reads the database clock: ${clockHit[0]}`,
-        { path: file.relativePath, startLine: lineAt(file.scanned.lineStarts, clockHit.index) },
+        `${file.relativePath} embeds SQL that reads the database clock`,
+        { path: file.relativePath, startLine: lineAt(file.scanned.lineStarts, clockHit.index), snippet: clockHit[0] },
         'differential-scenario',
       );
     }

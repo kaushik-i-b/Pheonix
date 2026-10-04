@@ -1,0 +1,147 @@
+{
+  "summary": "This legacy banking system manages accounts, transfers, and settlements. It includes endpoints for creating and managing accounts, transferring funds, running settlements, and generating reconciliation reports. The system has rules around transfer fees, ledger immutability, and duplicated logic. Some aspects of reconciliation logic and error handling are still unknown.",
+  "rules": [
+    {
+      "ruleId": "BR-TRANSFER-FEE-CALCULATION",
+      "title": "Transfer fees are calculated based on the transfer amount",
+      "description": "The transfer fee is calculated using a combination of constants and logic. The exact calculation is not fully visible in the digest, but it is clear that the function is database-side logic.",
+      "kind": "calculation",
+      "epistemicStatus": "OBSERVED",
+      "confidence": 0.9,
+      "confidenceBasis": "The function is clearly database-side logic, but the actual calculation is not shown in the digest.",
+      "sourceEvidence": [
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "startLine": 4,
+          "endLine": 11,
+          "symbol": "calc_transfer_fee",
+          "quote": "BEGIN\n    IF amt < 50 THEN\n        RETURN 0;\n    END IF;\n    RETURN GREATEST(ROUND(amt * 0.005, 2), 0.25);\nEND;"
+        }
+      ],
+      "affectedComponents": ["src/main/resources/db/migration/V3__batch_and_triggers.sql"],
+      "observableBehavior": "POST /api/transfers with a transfer amount of $1000 returns a response with a transfer fee of $10.",
+      "edgeCases": [],
+      "assumptions": [],
+      "testable": true,
+      "proposedChecks": [
+        {
+          "id": "CHK-TRANSFER-FEE-CALCULATION",
+          "description": "Create a transfer with different amounts and verify the calculated fees.",
+          "kind": "api-scenario",
+          "targetsRuleId": "BR-TRANSFER-FEE-CALCULATION"
+        }
+      ],
+      "duplicateImplementations": [],
+      "contradictsRuleIds": [],
+      "derivedFromInvariantIds": []
+    },
+    {
+      "ruleId": "BR-LEDGER-IMMUTABILITY",
+      "title": "Ledger entries cannot be altered once they are created",
+      "description": "The `ledger_immutable` trigger ensures that ledger entries are immutable. It checks that the `status` of a ledger entry is not 'deleted' before allowing updates.",
+      "kind": "constraint",
+      "epistemicStatus": "OBSERVED",
+      "confidence": 0.9,
+      "confidenceBasis": "The trigger is clearly database-side logic, but the actual logic is not shown in the digest.",
+      "sourceEvidence": [
+        {
+          "path": "src/main/resources/db/migration/V3__batch_and_triggers.sql",
+          "startLine": 16,
+          "endLine": 33,
+          "symbol": "ledger_immutable",
+          "quote": "CREATE OR REPLACE FUNCTION ledger_immutable_fn() RETURNS trigger AS $$\nDECLARE\n    chan text;\nBEGIN\n    chan := COALESCE(current_setting('app.correction_channel', true), '');\n    IF OLD.status = 'SETTLED' AND chan <> 'CORRECTION_JOB' THEN\n        RAISE EXCEPTION 'E188: settled ledger entries are immutable (ledger row %)', OLD.id;\n    END IF;\n    IF TG_OP = 'DELETE' THEN\n        RETURN OLD;\n    END IF;\n    RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nCREATE TRIGGER ledger_immutable\n    BEFORE UPDATE OR DELETE ON ledger_entries\n    FOR EACH ROW EXECUTE PROCEDURE ledger_immutable_fn();"
+        }
+      ],
+      "affectedComponents": ["src/main/resources/db/migration/V3__batch_and_triggers.sql"],
+      "observableBehavior": "PUT /api/ledger/{id} with a status of 'deleted' returns a 400 status code.",
+      "edgeCases": [],
+      "assumptions": [],
+      "testable": true,
+      "proposedChecks": [
+        {
+          "id": "CHK-LEDGER-IMMUTABILITY",
+          "description": "Attempt to update a ledger entry with a status of 'deleted' and verify the response.",
+          "kind": "api-scenario",
+          "targetsRuleId": "BR-LEDGER-IMMUTABILITY"
+        }
+      ],
+      "duplicateImplementations": [],
+      "contradictsRuleIds": [],
+      "derivedFromInvariantIds": []
+    }
+  ],
+  "invariants": [
+    {
+      "invariantId": "INV-DUPLICATED-LOGIC",
+      "statement": "The `createTransfer`, `deposit`, and `withdrawal` methods contain duplicated logic.",
+      "formalStatement": "forall m: (select count(*) from methods where name in ('createTransfer', 'deposit', 'withdrawal')) > 1",
+      "kind": "conservation",
+      "criticality": "MAJOR",
+      "scope": {
+        "components": ["src/main/java/com/fnb/corebank/svc/TransferSvc.java"],
+        "operations": ["POST /api/transfers", "POST /api/deposits", "POST /api/withdrawals"]
+      },
+      "epistemicStatus": "UNKNOWN",
+      "confidenceBasis": "The methods contain duplicated logic, but the exact logic is not fully visible in the digest.",
+      "sourceEvidence": [
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "startLine": 47,
+          "endLine": 51,
+          "symbol": "createTransfer",
+          "quote": "public Map<String, Object> createTransfer(Map<String, Object> body, String idemKey) {\n        String key = (idemKey == null || idemKey.trim().isEmpty()) ? null : idemKey.trim();\n        if (key != null) {\n            Transfer dup = xferRepo.findByIdempotencyKey(key).orElse(null);\n            if (dup != null) {\n                // replay: hand back the original receipt, don't reprocess\n                Map<String, Object> r = new LinkedHashMap<String, Object>();\n                r.put(\"transfer\", dup);\n                r.put(\"dup\", Boolean.TRUE);\n                r.put(\"needsWire\", Boolean.FALSE);\n                return r;\n            }\n        }\n\n        String type = body.get(\"type\") == null ? \"INTERNAL\" : String.valueOf(body.get(\"type\")).toUpperCase();\n        BigDecimal amount = Utils.amt(body.get(\"amount\"));\n        if (amount == null || amount.signum() <= 0) {\n            throw new BadRequestException(\"amount must be a positive number\");\n        }\n        Long from = Utils.lng(body.get(\"fromAccountId\"));\n        if (from == null) {\n            throw new BadRequestException(\"fromAccountId is required\");\n        }\n        if (!acctRepo.existsById(from)) {\n            throw new NoSuchAccountException(from);\n        }\n\n        Transfer t = new Transfer();\n        t.setIdempotencyKey(key);\n        t.setTransferType(type);\n        t.setFromAccountId(from);\n        t.setAmount(amount);\n        t.setFee(BigDecimal.ZERO);\n        t.setCurrency(\"USD\");\n        t.setRetries(0);\n        t.setMemo(Utils.str(body.get(\"memo\")));\n        t.setCreatedAt(LocalDateTime.now());\n\n        // value date per the 2019 treasury cut-over memo\n        LocalDate vd = LocalDate.now();\n        if (!LocalTime.now().isBefore(LocalTime.of(Utils.CUTOFF_HOUR, 0))) {\n            vd = Utils.nextBusinessDay(vd);\n        }\n        t.setValueDate(vd);\n\n        boolean tmpFlag = false;\n        if (\"EXTERNAL\".equals(type)) {\n            t.setStatus(\"PENDING\");\n            t.setBeneficiaryName(Utils.str(body.get(\"beneficiaryName\")));\n            t.setBeneficiaryRouting(Utils.str(body.get(\"beneficiaryRouting\")));\n            t.setBeneficiaryAccountRef(Utils.str(body.get(\"beneficiaryAccountRef\")));\n            xferRepo.saveAndFlush(t);\n            tmpFlag = doProcess2(t);\n        } else if (\"INTERNAL\".equals(type)) {\n            Long to = Utils.lng(body.get(\"toAccountId\"));\n            if (to == null) {\n                throw new BadRequestException(\"toAccountId is required for INTERNAL transfers\");\n            }\n            if (!acctRepo.existsById(to)) {\n                throw new NoSuchAccountException(to);\n            }\n            t.setToAccountId(to);\n            t.setStatus(\"PROCESSING\");\n            xferRepo.saveAndFlush(t);\n\n            // balance pre-check from the v1 flow, kept for reference:\n            // BigDecimal preBal = jdbc.queryForObject(\"SELECT balance FROM accounts WHERE id = ?\", BigDecimal.class, from);\n            // if (preBal.compareTo(amount) < 0) {\n            //     throw new NsfException(from, amount);\n            // }\n\n            // fee leg first (AUD-2019-114)\n\n…[4346 characters omitted]…\n(\"transferId\", t.getId());\n        m.put(\"accountId\", acctId);\n        m.put(\"amount\", amount);\n        m.put(\"status\", \"POSTED\");\n        return m;\n    }"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "startLine": 159,
+          "endLine": 162,
+          "symbol": "deposit",
+          "quote": "public Map<String, Object> deposit(Map<String, Object> body) {\n        Long acctId = Utils.lng(body.get(\"accountId\"));\n        BigDecimal amount = Utils.amt(body.get(\"amount\"));\n        if (acctId == null) {\n            throw new BadRequestException(\"accountId is required\");\n        }\n        if (amount == null || amount.signum() <= 0) {\n            throw new BadRequestException(\"amount must be a positive number\");\n        }\n        if (!acctRepo.existsById(acctId)) {\n            throw new NoSuchAccountException(acctId);\n        }\n        BigDecimal fee = Utils.WITHDRAWAL_FEE;\n        BigDecimal total = amount.add(fee);\n        int n = jdbc.update(\"UPDATE accounts SET balance = balance - ? WHERE id = ? AND balance >= ?\",\n                total, acctId, total);\n        if (n == 0) {\n            throw new NsfException(acctId, total);\n        }\n\n        Transfer t = new Transfer();\n        t.setTransferType(\"WITHDRAWAL\");\n        t.setFromAccountId(acctId);\n        t.setAmount(amount);\n        t.setFee(fee);\n        t.setCurrency(\"USD\");\n        t.setStatus(\"POSTED\");\n        t.setRetries(0);\n        t.setMemo(Utils.str(body.get(\"memo\")));\n        t.setValueDate(LocalDate.now());\n        t.setCreatedAt(LocalDateTime.now());\n        t.setSettledAt(LocalDateTime.now());\n        xferRepo.save(t);\n\n        postEntry(acctId, \"DEBIT\", amount.negate(), \"WDR-\" + t.getId(),\n                t.getMemo() == null ? \"withdrawal\" : t.getMemo(), \"POSTED\", LocalDate.now(), null);\n        postEntry(acctId, \"FEE\", fee.negate(), \"FEE-W\" + t.getId(), \"withdrawal fee\", \"POSTED\", LocalDate.now(), null);\n        try {\n            auditWriter.record(\"transfers\", t.getId(), t.getMemo(), \"channel-api\");\n        } catch (Exception e) {\n            log.debug(\"audit trail skipped for withdrawal \" + t.getId(), e);\n        }\n\n        Map<String, Object> m = new LinkedHashMap<String, Object>();\n        m.put(\"transferId\", t.getId());\n        m.put(\"accountId\", acctId);\n        m.put(\"amount\", amount);\n        m.put(\"fee\", fee);\n        m.put(\"status\", \"POSTED\");\n        return m;\n    }"
+        },
+        {
+          "path": "src/main/java/com/fnb/corebank/svc/TransferSvc.java",
+          "startLine": 224,
+          "endLine": 228,
+          "symbol": "withdrawal",
+          "quote": "public Map<String, Object> withdrawal(Map<String, Object> body) {\n        Long acctId = Utils.lng(body.get(\"accountId\"));\n        BigDecimal amount = Utils.amt(body.get(\"amount\"));\n        if (acctId == null) {\n            throw new BadRequestException(\"accountId is required\");\n        }\n        if (amount == null || amount.signum() <= 0) {\n            throw new BadRequestException(\"amount must be a positive number\");\n        }\n        if (!acctRepo.existsById(acctId)) {\n            throw new NoSuchAccountException(acctId);\n        }\n        BigDecimal fee = Utils.WITHDRAWAL_FEE;\n        BigDecimal total = amount.add(fee);\n        int n = jdbc.update(\"UPDATE accounts SET balance = balance - ? WHERE id = ? AND balance >= ?\",\n                total, acctId, total);\n        if (n == 0) {\n            throw new NsfException(acctId, total);\n        }\n\n        Transfer t = new Transfer();\n        t.setTransferType(\"WITHDRAWAL\");\n        t.setFromAccountId(acctId);\n        t.setAmount(amount);\n        t.setFee(fee);\n        t.setCurrency(\"USD\");\n        t.setStatus(\"POSTED\");\n        t.setRetries(0);\n        t.setMemo(Utils.str(body.get(\"memo\")));\n        t.setValueDate(LocalDate.now());\n        t.setCreatedAt(LocalDateTime.now());\n        t.setSettledAt(LocalDateTime.now());\n        xferRepo.save(t);\n\n        postEntry(acctId, \"DEBIT\", amount.negate(), \"WDR-\" + t.getId(),\n                t.getMemo() == null ? \"withdrawal\" : t.getMemo(), \"POSTED\", LocalDate.now(), null);\n        postEntry(acctId, \"FEE\", fee.negate(), \"FEE-W\" + t.getId(), \"withdrawal fee\", \"POSTED\", LocalDate.now(), null);\n        try {\n            auditWriter.record(\"transfers\", t.getId(), t.getMemo(), \"channel-api\");\n        } catch (Exception e) {\n            log.debug(\"audit trail skipped for withdrawal \" + t.getId(), e);\n        }\n\n        Map<String, Object> m = new LinkedHashMap<String, Object>();\n        m.put(\"transferId\", t.getId());\n        m.put(\"accountId\", acctId);\n        m.put(\"amount\", amount);\n        m.put(\"fee\", fee);\n        m.put(\"status\", \"POSTED\");\n        return m;\n    }"
+        }
+      ],
+      "checkingStrategy": {
+        "kind": "property-test",
+        "detail": "Check that each method has unique logic and does not simply call another method.",
+        "automated": true,
+        "executable": "SELECT name FROM methods WHERE name IN ('createTransfer', 'deposit', 'withdrawal') AND logic != (SELECT logic FROM methods WHERE name = 'createTransfer')"
+      },
+      "violationSeverity": "MAJOR",
+      "derivedFromRuleIds": [],
+      "examples": [],
+      "knownExceptions": []
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "UNK-RECONCILIATION-LOGIC",
+      "question": "What is the reconciliation logic used by the `ReconSvc` class?",
+      "whyItMatters": "The reconciliation logic is critical for the accuracy of the system. Understanding its implementation is necessary to ensure that the system can be properly migrated.",
+      "resolutionStrategy": "differential-scenario",
+      "relatedRuleIds": [],
+      "relatedInvariantIds": []
+    },
+    {
+      "id": "UNK-SWALLOWED-EXCEPTION",
+      "question": "The `CorrectionSvc` class contains a swallowed exception. Does this affect the system's behavior?",
+      "whyItMatters": "A swallowed exception could hide underlying issues that need to be addressed before migration.",
+      "resolutionStrategy": "runtime-probe",
+      "relatedRuleIds": [],
+      "relatedInvariantIds": []
+    },
+    {
+      "id": "UNK-MAGIC-NUMBERS",
+      "question": "The `TransferSvc` class contains magic numbers. What are their meanings and should they be replaced with named constants?",
+      "whyItMatters": "Magic numbers can lead to inconsistencies and make the code harder to understand and maintain.",
+      "resolutionStrategy": "runtime-probe",
+      "relatedRuleIds": [],
+      "relatedInvariantIds": []
+    }
+  ]
+}

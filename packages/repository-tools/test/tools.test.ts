@@ -349,6 +349,22 @@ describe('tool permission enforcement', () => {
     expect(invocations[0]?.outputSummary).toContain('FeeCalc.java');
   });
 
+  it('clips a long output to the audit limit instead of failing the call', async () => {
+    // Any source file longer than the summary cap is ordinary, so a summary that overshoots the cap
+    // by one character would turn a successful read into an INTERNAL error the agent cannot act on.
+    const path = join(rig.paths.legacyRoot, 'src/main/java/Ledger.java');
+    writeFileSync(path, 'public class Ledger {\n'.padEnd(5_000, ' '), 'utf8');
+    const { executor, invocations } = rig.executorFor('archaeologist');
+
+    const { result } = await executor.invoke(call('c1', 'read_file', { path }), rig.contextFor('archaeologist'));
+
+    expect(result.ok).toBe(true);
+    expect(result.content.startsWith('public class Ledger {')).toBe(true);
+    expect(invocations[0]?.outcome).toBe('ok');
+    expect(invocations[0]?.outputSummary.length).toBeLessThanOrEqual(4_000);
+    expect(invocations[0]?.outputSummary.startsWith('public class Ledger {')).toBe(true);
+  });
+
   it('lists files recursively while skipping build output', async () => {
     mkdirSync(join(rig.paths.legacyRoot, 'target', 'classes'), { recursive: true });
     writeFileSync(join(rig.paths.legacyRoot, 'target', 'classes', 'FeeCalc.class'), 'binary', 'utf8');

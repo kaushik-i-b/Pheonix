@@ -39,7 +39,7 @@ Phoenix is an engineering system, not a demo. The following are hard rules:
 | Docker | **not installed** | compose files are shipped for portability, but the demo runs natively |
 | Maven | 3.9.16 (installed during setup) | builds `examples/legacy-bank` |
 | JDK | Zulu 17.0.15 at `/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home` | legacy app targets Java 8 language level, runs on JDK 17 |
-| Local LLM | Ollama on `http://localhost:11434/v1` (llama3.2, mistral, deepseek-r1) | used to validate the generic OpenAI-compatible provider end-to-end until Qwen credentials are supplied |
+| Local LLM | dedicated Ollama on `http://localhost:11435/v1`, `OLLAMA_CONTEXT_LENGTH=32768`, model `qwen2.5-coder:7b-instruct` (ADR-7 addendum) | the real working model for the vertical slice; hosted Qwen remains a `LLM_BASE_URL` swap |
 
 No `LLM_API_KEY` is present in the environment, so real-LLM validation runs against the
 local Ollama endpoint through the same provider interface that Qwen will use. Tests never
@@ -259,6 +259,17 @@ DISCOVERY → SPECIFICATION → CHARACTERIZATION → DESIGN → IMPLEMENTATION
 
 ## 10. Phase plan
 
+**Strategy (revised 2026-10-01): vertical slice first.** Development no longer proceeds by
+completing every planned subsystem sequentially. The single gate is one minimal but genuine
+end-to-end slice (§11): legacy-bank → Archaeologist → discovered business rules → invariants →
+characterization tests → minimal modern implementation → differential testing → a real
+behavioral mismatch → autonomous diagnosis and repair → re-verification → PASS/REJECT.
+Nothing horizontal — dashboard, UI polish, worker infrastructure, elaborate APIs, distributed
+execution, production deployment, advanced observability, sophisticated persistence,
+unnecessary abstractions — is built until that loop runs end to end against the live legacy
+system with the real model. Phases 1-2 are complete; Phases 3-9 are compressed into the slice
+and judged only by it; Phases 11-12 are explicitly deferred.
+
 | Phase | Deliverable | Exit criteria |
 |---|---|---|
 | 1 | Monorepo + `shared` schemas + config + artifact-store + sandbox/tools + llm | `typecheck`, `lint`, `test` all green |
@@ -280,6 +291,21 @@ The repository is never left knowingly broken.
 Legacy app → Archaeologist → rules/invariants → characterization tests → small modern
 replacement → differential verifier → mismatch → automatic repair → reverification →
 PASS/REJECT. Everything else is sophistication layered on top of this working path.
+
+The slice's fixed constraints, binding until it passes:
+
+1. **The legacy-bank is not touched.** Phoenix adapts to the existing application; the
+   application is not adjusted to make Phoenix succeed. It is the unknown system whose
+   behavior must be discovered, never told.
+2. **Minimum agent runtime.** Archaeologist, Rule/Invariant Analyst, Modernizer, Verifier —
+   each producing structured, schema-validated artifacts. No generic multi-agent framework.
+3. **Every discovered rule cites evidence from the legacy repository.**
+4. **A genuine mismatch is required.** At least one real divergence found by comparison —
+   never artificially inserted after generation. A preserved obscure legacy behavior
+   (e.g. `2.01` vs `2.00` fee rounding) flowing through DIAGNOSE → REPAIR → RE-VERIFY is the
+   proof the loop is real.
+5. **No fakes, at any point.** No hardcoded discovery results, no hardcoded PASS, no hidden
+   ground truth copied into prompts, no test bypasses, no silent downgrades.
 
 ---
 

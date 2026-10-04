@@ -128,7 +128,11 @@ export function analyzeRepository(options: AnalyzeOptions): RepositoryAnalysis {
       kind: 'db-object',
       label: `${object.kind} ${object.name}`,
       location: object.definedIn,
-      ...(object.behavior !== undefined ? { notes: object.behavior.slice(0, 500) } : {}),
+      // The body is already carried by `databaseObjects[].behavior`; repeating it here would put
+      // SQL text where an index entry belongs, and the digest renders entry-point notes verbatim.
+      ...(object.behavior !== undefined
+        ? { notes: `carries ${object.behavior.length} characters of database-side logic; the body is not quoted here` }
+        : {}),
     });
   }
 

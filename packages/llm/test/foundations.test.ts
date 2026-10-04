@@ -167,6 +167,23 @@ describe('prompt registry', () => {
     expect(() => parsePromptFile('no front matter here', '/prompts/bad.md')).toThrowError(/no front matter/);
   });
 
+  it('parses an empty requiredVariables list as no variables', () => {
+    const definition = parsePromptFile(
+      '---\nid: empty.vars\nversion: 1.0.0\ndescription: d\naudience: modernizer\nrequiredVariables: []\n---\nNo variables here.\n',
+      '/prompts/empty.md',
+    );
+    expect(definition.requiredVariables).toEqual([]);
+    expect(() => PromptRegistry.fromDefinitions([definition]).render('empty.vars', {})).not.toThrow();
+  });
+
+  it('parses an inline requiredVariables list with brackets', () => {
+    const definition = parsePromptFile(
+      '---\nid: inline.vars\nversion: 1.0.0\ndescription: d\naudience: modernizer\nrequiredVariables: [alpha, beta]\n---\n{{alpha}} {{beta}}\n',
+      '/prompts/inline.md',
+    );
+    expect(definition.requiredVariables).toEqual(['alpha', 'beta']);
+  });
+
   it('rejects duplicate ids with conflicting versions', () => {
     const base = parsePromptFile(
       '---\nid: dup\nversion: 1.0.0\ndescription: d\naudience: orchestrator\n---\nhello\n',

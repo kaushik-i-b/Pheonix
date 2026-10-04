@@ -27,6 +27,7 @@ import {
 export const assertionKindSchema = z.enum([
   'http-status',
   'json-value',
+  'text-value',
   'json-shape',
   'row-count',
   'db-value',
@@ -37,6 +38,20 @@ export const assertionKindSchema = z.enum([
   'side-effect',
 ]);
 export type AssertionKind = z.infer<typeof assertionKindSchema>;
+
+/**
+ * Why a captured value is excluded from comparison.
+ *
+ * Recorded rather than implied: a normalized assertion that cannot say what varied, what it varied
+ * between, and which host policy excused it is indistinguishable from a difference somebody did not
+ * want to see.
+ */
+export const assertionNormalizationSchema = z.object({
+  reason: z.enum(['varied-across-repeated-legacy-executions']),
+  policy: z.string().min(1),
+  observedValues: z.array(z.unknown()).min(2).max(2),
+});
+export type AssertionNormalization = z.infer<typeof assertionNormalizationSchema>;
 
 export const characterizationAssertionSchema = z.object({
   assertionId: z.string().min(1),
@@ -51,6 +66,7 @@ export const characterizationAssertionSchema = z.object({
   tolerance: z.number().nonnegative().optional(),
   /** Set when the value is legitimately nondeterministic and normalization is configured for it. */
   normalized: z.boolean().default(false),
+  normalization: assertionNormalizationSchema.optional(),
   sourceRuleIds: z.array(ruleIdSchema).default([]),
   sourceInvariantIds: z.array(invariantIdSchema).default([]),
   evidence: z.array(evidenceRefSchema).default([]),
@@ -78,6 +94,12 @@ export const characterizationCaseSchema = z.object({
   /** True when the captured behavior looks wrong but is recorded as-is: legacy is the contract. */
   recordsLegacyDefect: z.boolean().default(false),
   defectNote: z.string().max(4000).optional(),
+  /**
+   * Paths that differed between two identical executions against legacy but that host policy will
+   * not excuse from comparison. Their assertions stay live, so a scenario that mutates shared state
+   * shows up as a mismatch to investigate rather than being silently forgiven.
+   */
+  unexplainedVolatility: z.array(z.string().min(1)).default([]),
   targetRuleIds: z.array(ruleIdSchema).default([]),
   targetInvariantIds: z.array(invariantIdSchema).default([]),
   captureExecutionId: z.string().min(1).optional(),

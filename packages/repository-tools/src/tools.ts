@@ -715,8 +715,9 @@ export function classifyFailure(code: PhoenixError['code']): ToolInvocation['out
   return 'error';
 }
 
+/** At most `max` characters, marker included: these summaries land in schema fields capped at `max`. */
 function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}…`;
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 function tail(text: string, max: number): string {
