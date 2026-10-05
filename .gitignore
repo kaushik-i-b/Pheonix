@@ -8,6 +8,7 @@ build/
 *.tsbuildinfo
 .next/
 out/
+.vercel/
 
 # java / maven (legacy example)
 target/
@@ -38,3 +39,5 @@ coverage/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+.vercel
+.env*

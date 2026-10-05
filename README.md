@@ -65,6 +65,19 @@ pnpm phoenix modernize --run-id <run-id> --max-steps 12 --max-repairs 3
 
 The pinned completed lineage is `run_1ad5681e13294219959c3908022799c5`. Its artifacts, including failed attempts, are under `artifacts/` and are not committed.
 
+## Recorded-run dashboard
+
+`/` is the recorded demo. `/recorded/` keeps the comparison detail, source excerpts, artifact paths, the bundle download, and run history. Neither page calls a model. Regenerate the browser bundle from the explicit task list, then start or build the existing Next.js app:
+
+```bash
+node scripts/export-demo-bundle.mjs
+pnpm --filter @phoenix/web dev
+pnpm --filter @phoenix/web typecheck
+pnpm --filter @phoenix/web build
+```
+
+Open `http://localhost:3000/recorded/`. The sanitized bundle is also served at `/recorded-run.json`.
+
 ## Checks
 
 ```bash
@@ -75,4 +88,4 @@ That is `pnpm typecheck && pnpm lint && pnpm test`. `pnpm format:check` is not p
 
 ## What this run does not include
 
-Dashboards, workers, provider fallback, and cloud deployment are out of scope. Clock fields (`createdAt`, `settledAt`, and other `At` / `Time` suffixes) are recorded and then excluded from equivalence: a seed snapshot's instant is not a business output a second process has to reproduce. Amounts, statuses, dates, and fees stay strict.
+Workers, a provider fallback, and cloud deployment are not part of this pipeline. The recorded-run page is a static view of one lineage, not a product dashboard. Clock fields (`createdAt`, `settledAt`, and other `At` / `Time` suffixes) are recorded and then excluded from equivalence: a seed snapshot's instant is not a business output a second process has to reproduce. Amounts, statuses, dates, and fees stay strict.
