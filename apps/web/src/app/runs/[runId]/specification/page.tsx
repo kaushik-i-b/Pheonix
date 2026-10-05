@@ -6,6 +6,7 @@ import { StampChip } from '../../../../components/stamp-chip';
 import type { StampTone } from '../../../../components/stamp-chip';
 import { resolveWorkspace } from '../../../../data/repo-root';
 import type { Workspace } from '../../../../data/repo-root';
+import { sanitizeForDisplay } from '../../../../data/sanitize';
 import { scanRuns } from '../../../../data/runs';
 import { loadSpecification } from '../../../../data/specification';
 import type { Invariant, Rule, SpecArtifact, SpecUnknown } from '../../../../data/specification';
@@ -77,7 +78,7 @@ export default async function SpecificationPage({
         {!loaded.ok ? (
           <ExhibitSheet>
             <p className="px-4 py-6 font-mono text-[12px] text-ink-soft">
-              This section could not be read: {loaded.error}
+              This section could not be read: {sanitizeForDisplay(loaded.error, ws, 600)}
             </p>
           </ExhibitSheet>
         ) : artifacts.length === 0 ? (
