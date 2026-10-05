@@ -12,6 +12,7 @@ import { assertFeaturedIntact, featuredRun, scanRuns } from '../data/runs';
 import type { RunSummary } from '../data/runs';
 import { loadSpecification } from '../data/specification';
 import type { Evidence } from '../data/specification';
+import { countLabel, displayCitation, formatAt, iterationLabel } from '../lib/format';
 
 interface HeroExhibit {
   ruleId: string;
@@ -197,10 +198,6 @@ function RunRow({ run, featured }: { run: RunSummary; featured: boolean }) {
   );
 }
 
-function displayCitation(recordedPath: string): string {
-  return recordedPath.startsWith('/') ? '[host path withheld]' : recordedPath;
-}
-
 function recheckLabel(recheck: RecheckResult): string {
   switch (recheck.state) {
     case 'matched':
@@ -228,17 +225,4 @@ function recheckTone(recheck: RecheckResult): StampTone {
     case 'out-of-range':
       return 'danger';
   }
-}
-
-function formatAt(at: string | null): string {
-  if (at === null) return 'no events recorded';
-  return `${at.slice(0, 10)} ${at.slice(11, 16)} UTC`;
-}
-
-function iterationLabel(iteration: number): string {
-  return iteration === 0 ? 'initial' : `r${iteration}`;
-}
-
-function countLabel(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
 }
