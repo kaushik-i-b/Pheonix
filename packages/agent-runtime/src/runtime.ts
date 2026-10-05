@@ -133,6 +133,13 @@ export interface CitationRewriteOutcome<TValue> {
   value?: TValue;
   /** Loud record of what the rewrite did; each note lands in the run's warnings and step log. */
   notes?: readonly string[];
+  /**
+   * What the model has to change, appended to its rejection message when no rewritten answer came
+   * back. `notes` describe what the host did; this carries what the host proved wrong from the real
+   * bytes — the only part the model can act on, and the part the generic citation checker cannot
+   * know, because it never tried to locate the quote.
+   */
+  feedback?: readonly string[];
 }
 
 export interface AgentInvocation<TValue> {
@@ -161,6 +168,15 @@ export interface AgentInvocation<TValue> {
   rewriteCitations?: (
     request: CitationRewriteRequest<TValue>,
   ) => Promise<CitationRewriteOutcome<TValue>>;
+  /**
+   * A shortfall in an answer that parsed cleanly and whose citations all resolved: the schema cannot
+   * express it, but the stage's contract requires it. Reported to the model once, with the fix, and
+   * then the answer is accepted whatever it says — a shortfall the acceptance criteria already grade
+   * as PARTIAL is more useful than a hard failure that leaves the run with no artifact to diagnose.
+   * The gap must never be closable by inventing content, so the returned message is expected to name
+   * the honest alternative as well.
+   */
+  contractGap?: (value: TValue) => string | undefined;
   /** Turns the validated answer into artifacts. Runs in host code, never in the model. */
   persistOutput?: (
     value: TValue,
@@ -171,6 +187,8 @@ export interface AgentInvocation<TValue> {
   expectations?: readonly ArtifactExpectation[];
   testRuns?: readonly TestRunSummary[];
   customChecks?: Readonly<Record<string, CustomCheck>>;
+  /** When true, source-code evidence without a startLine triggers the rewrite path. */
+  requireStartLine?: boolean;
   /**
    * Where in-loop citation checks may resolve quotes. Defaults to the legacy repository only: a
    * citation is a claim about the system under analysis, and adding the run's own artifact root here
@@ -208,12 +226,26 @@ interface LoopFailure {
 }
 
 const DEFAULT_MAX_STRUCTURED_REPAIRS = 2;
+/**
+ * One objection per contract gap, never two. The gap is a shortfall the schema cannot express, so the
+ * model cannot be shown a failing parse to learn from — it gets one round with the requirement spelled
+ * out, and if it still cannot meet it the answer is accepted and the acceptance criteria grade it
+ * PARTIAL. That grade is the honest outcome: a run with an artifact and a recorded limitation can be
+ * diagnosed, and a run that hard-failed on a second identical objection cannot.
+ */
+const MAX_CONTRACT_ROUNDS = 1;
 const DEFAULT_MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_EVIDENCE_REFS = 200;
 const MAX_ASSISTANT_TEXT = 20_000;
 /** `agentStepEventSchema.summary` is capped at exactly this; a step note is capped at 4000. */
 const STEP_EVENT_SUMMARY_LIMIT = 2_000;
 const STEP_NOTE_LIMIT = 4_000;
+/**
+ * Anchoring diagnoses carried into a rejection message. Bounded for the same reason the host-read
+ * rounds are: a repair message longer than the model's attention gets ignored rather than acted on,
+ * and the citations that did not resolve are the ones worth the space.
+ */
+const CITATION_FEEDBACK_MAX = 8;
 
 /**
  * Host-initiated reading, and why the host is allowed to do it.
@@ -449,6 +481,37 @@ function hostReadMessage(
   return lines.join('\n');
 }
 
+/**
+ * The message that opens the reserved final call.
+ *
+ * A model that only ever asks for tools never reaches an answer on its own: every call it is allowed
+ * to make ends in tool calls, the loop runs out of steps, and the run is recorded as cut short with
+ * nothing persisted. So the last permitted call is taken away from investigation — tools are
+ * disabled at the provider — and this message says what to do with it instead. It forbids inventing
+ * evidence for the same reason the rest of the loop does: an honest gap is usable downstream, a
+ * fabricated citation is not.
+ */
+function finalCallInstruction(hasTools: boolean, structured: boolean): string {
+  const lines: string[] = ['This is your final model call.'];
+  if (hasTools) {
+    lines.push(
+      'Tool calls are disabled for it, so nothing you ask for here will be run and you cannot read or search anything else.',
+    );
+  }
+  lines.push(
+    'Produce your final answer now, from the evidence you have already collected in this conversation.',
+    '- Support every claim from material that appears above: a file you opened, a tool result, or the task brief.',
+    '- Put anything that material does not support into your unknowns, with the strategy that would settle it, and say plainly that you could not establish it.',
+    '- Do not invent a path, a line number or a quote to make the answer look complete. A recorded gap is accepted; invented evidence is rejected and recorded against this task.',
+  );
+  lines.push(
+    structured
+      ? 'Reply with ONLY one complete JSON value, and nothing around it. A reply cut off by the token limit is rejected; a nested object inside an unfinished document is not a final answer. Prefer a short value that includes every required field over a longer one that does not finish.'
+      : 'Reply with your final answer now.',
+  );
+  return lines.join('\n');
+}
+
 export async function runAgentTask<TValue>(
   invocation: AgentInvocation<TValue>,
   runtime: AgentRuntime,
@@ -601,12 +664,39 @@ export async function runAgentTask<TValue>(
   /** Absolute paths the agent really opened with `read_file`, used to refuse citations it never read. */
   const openedFiles = new Set<string>();
   /**
-   * Bounded because an answer that cites only nonexistent paths leaves `openedFiles` empty, and an
-   * unbounded loop would spend every remaining step discovering that, one round at a time.
+   * Absolute paths this invocation has already been told do not exist.
+   *
+   * `read_file` answers a missing path identically every time, so a second automatic read of one can only
+   * repeat "file not found" — while costing the step the model needed to act on the correction the first
+   * read already earned it. Only the definitive answer is remembered: a read that failed for another
+   * reason may succeed on a later round, and forgetting that would be a silent downgrade of a real fault.
+   */
+  const missingPaths = new Set<string>();
+  /**
+   * Bounded because a round can fail without learning anything final — a denied path, or one left
+   * unattempted when the read budget ran out — and an unbounded loop would spend every remaining step
+   * retrying that. Paths that failed definitively are handled by `missingPaths`, not by this cap.
    */
   let hostReadRounds = 0;
   /** Characters already handed back across all rounds, against `HOST_READ_TOTAL_CHARS`. */
   let hostReadChars = 0;
+  /** Contract objections already raised, against `MAX_CONTRACT_ROUNDS`. */
+  let contractRounds = 0;
+
+  /**
+   * The stage's contract objection to an answer that is otherwise acceptable, or `undefined` when there
+   * is none left to make. Called only at an accept point, so it never rejects an answer the schema or the
+   * citation gate had already refused — and bounded, so an answer that cannot meet the contract is
+   * accepted on the second pass and graded by the acceptance criteria instead of failing the run.
+   */
+  const contractGapOf = (candidate: TValue): string | undefined => {
+    if (invocation.contractGap === undefined) return undefined;
+    if (contractRounds >= MAX_CONTRACT_ROUNDS) return undefined;
+    const gap = invocation.contractGap(candidate);
+    if (gap === undefined) return undefined;
+    contractRounds += 1;
+    return gap;
+  };
 
   /**
    * Runs one tool call and records it. Shared by the model's own calls and the host-initiated reads, so
@@ -673,22 +763,28 @@ export async function runAgentTask<TValue>(
    * One host-initiated reading round: open the paths the model named but never read, and replace its
    * rejected answer with the repository's actual bytes.
    *
-   * Returns false when the round attempted nothing at all — the path list was empty, or every path was
-   * already past the read budget — so the caller falls through to the ordinary rejection instead of
-   * sending a message that carries neither bytes nor names. A round whose reads all failed is still
-   * worth sending: the `NOT OPENED` lines answer "why can't I cite this file", which is how a model
-   * that invented a path learns the path is not there.
+   * Returns false when the round attempted nothing at all — the path list was empty, every path was
+   * already reported missing, or every path was already past the read budget — so the caller falls
+   * through to the ordinary rejection instead of sending a message that carries neither bytes nor names.
+   * A round whose reads all failed is still worth sending: the `NOT OPENED` lines answer "why can't I
+   * cite this file", which is how a model that invented a path learns the path is not there.
    */
   const hostReadRound = async (
     paths: readonly string[],
     complaint: string,
     note: string,
   ): Promise<boolean> => {
+    const canonicalRoots = evidenceRoots.map((root) => canonicalizePath(resolve(root)));
+    const candidates = paths.filter((path) => {
+      const resolved = resolveCitedPath(path, canonicalRoots);
+      return resolved === undefined || !missingPaths.has(resolved);
+    });
+    if (candidates.length === 0) return false;
     hostReadRounds += 1;
     const reads: HostRead[] = [];
     const notOpened: string[] = [];
     let slots = HOST_READ_MAX_FILES;
-    for (const path of paths) {
+    for (const path of candidates) {
       if (slots === 0 || hostReadChars >= HOST_READ_TOTAL_CHARS || toolCallCount >= maxToolCalls) {
         notOpened.push(path);
         continue;
@@ -711,6 +807,10 @@ export async function runAgentTask<TValue>(
         // Costs a tool call but not one of the five read slots: a path that does not exist should buy the
         // model a correction, not shrink the material it gets to reason over.
         reads.push({ path, ok: false, problem: clipTo(outcome.result.content, 200) });
+        if (outcome.result.content.startsWith('file not found:')) {
+          const resolved = resolveCitedPath(path, canonicalRoots);
+          if (resolved !== undefined) missingPaths.add(resolved);
+        }
         continue;
       }
       slots -= 1;
@@ -773,9 +873,11 @@ export async function runAgentTask<TValue>(
         'host-initiated read: anchoring a rejected citation to real bytes',
       );
       if (!outcome.result.ok) {
+        const definitive = outcome.result.content.startsWith('file not found:');
+        if (definitive) missingPaths.add(resolved);
         return {
           problem: clipTo(outcome.result.content, 300),
-          ...(outcome.result.content.startsWith('file not found:') ? { definitive: true } : {}),
+          ...(definitive ? { definitive: true } : {}),
         };
       }
       if (outcome.result.truncated) {
@@ -791,7 +893,7 @@ export async function runAgentTask<TValue>(
   };
 
   for (let step = 0; step < budget.maxSteps; step += 1) {
-    if (invocation.signal?.aborted === true) {
+    if (callerAborted(invocation.signal)) {
       failure = {
         code: 'AGENT_CANCELLED',
         message: 'task was cancelled by the caller',
@@ -818,24 +920,49 @@ export async function runAgentTask<TValue>(
 
     let completion: CompletionResult;
     const callStartedAt = Date.now();
+    // The last permitted call is reserved for answering: tools are disabled at the provider, so a
+    // model that has been investigating for every step so far still gets one call in which it can
+    // only produce its final answer. Without this, a tool-seeking model spends the whole budget on
+    // tools and dies at AGENT_STEP_LIMIT having persisted nothing.
+    const reservedFinalCall = step === budget.maxSteps - 1;
+    if (reservedFinalCall) {
+      messages.push({
+        role: 'user',
+        content: finalCallInstruction(specs.length > 0, expectedSchema !== undefined),
+        toolCalls: [],
+      });
+    }
     try {
       completion = await runtime.provider.complete(
         {
           purpose,
           messages,
           tools: specs,
-          toolChoice: specs.length > 0 ? 'auto' : 'none',
+          toolChoice: specs.length > 0 && !reservedFinalCall ? 'auto' : 'none',
           responseFormat: expectedSchema === undefined ? 'text' : 'json',
           ...(expectedSchema === undefined ? {} : { expectedSchema }),
-          ...(invocation.signal !== undefined ? { signal: invocation.signal } : {}),
         },
         {
+          // The signal goes in options, not the request: `completionRequestSchema` has no `signal`
+          // field and would strip it before the provider ever saw it.
+          ...(invocation.signal !== undefined ? { signal: invocation.signal } : {}),
           onWarn: (message) => {
             warnings.push(message);
           },
         },
       );
     } catch (error) {
+      // An abort surfaces as a failed fetch. Reporting it as a provider outage would make the
+      // deadline look retryable when the same deadline would recur.
+      if (callerAborted(invocation.signal)) {
+        failure = {
+          code: 'AGENT_CANCELLED',
+          message: `task was cancelled by the caller after ${llmCalls} model call(s)`,
+          retryable: false,
+        };
+        runtime.logger?.error('agent llm call aborted', { taskId: task.taskId });
+        break;
+      }
       const described = describeError(error);
       failure = {
         code: described.code,
@@ -851,11 +978,19 @@ export async function runAgentTask<TValue>(
     const cost =
       completion.cost ??
       estimateCost(completion.usage, findPricing(runtime.pricing, completion.model));
+    // The transcript field is capped by its schema. Parsing and acceptance below use
+    // `completion.text` itself, so a display cap cannot turn a long reply into a different value.
+    const recordedAssistantText = completion.text.slice(0, MAX_ASSISTANT_TEXT);
+    if (completion.text.length > recordedAssistantText.length) {
+      warnings.push(
+        `transcript stores ${recordedAssistantText.length} of ${completion.text.length} assistant characters; validation uses the full reply`,
+      );
+    }
     recordStep({
       kind: 'llm-call',
       promptHash: completion.promptHash,
       model: completion.model,
-      assistantText: completion.text.slice(0, MAX_ASSISTANT_TEXT),
+      assistantText: recordedAssistantText,
       toolCalls: completion.toolCalls.map((call) => ({
         id: call.id,
         name: call.name,
@@ -924,6 +1059,23 @@ export async function runAgentTask<TValue>(
     }
 
     finalText = completion.text;
+    const truncated = truncatedAnswerFailure(
+      purpose,
+      completion,
+      finalText,
+      invocation.outputSchema !== undefined,
+    );
+    if (truncated !== undefined) {
+      failure = truncated;
+      warnings.push(truncated.message);
+      recordStep({
+        kind: 'note',
+        toolCalls: [],
+        toolResults: [],
+        note: truncated.message,
+      });
+      break;
+    }
     if (invocation.outputSchema === undefined) {
       answered = true;
       break;
@@ -959,6 +1111,12 @@ export async function runAgentTask<TValue>(
           : undefined;
     /** Set only when the answer parsed and its citations were actually checked: the anchoring trigger. */
     let citationProblem: string | undefined;
+    /**
+     * Set when the answer is schema-valid and fully cited but misses part of the stage's contract. Kept
+     * apart from `problem` because it changes what the rejection says: the citation-specific guidance and
+     * the unread-files round both describe a defect this answer does not have.
+     */
+    let contractProblem: string | undefined;
     if (invocation.evidenceSource !== undefined && openedFiles.size === 0) {
       // Nothing-read outranks citation violations, because every one of them has that same cause and a
       // list of them reads as eight separate complaints about spelling. It does not outrank a schema
@@ -971,6 +1129,7 @@ export async function runAgentTask<TValue>(
         invocation.evidenceSource,
         evidenceRoots,
         openedFiles,
+        invocation.requireStartLine === true,
       );
       problem = citationProblem;
     }
@@ -1000,7 +1159,13 @@ export async function runAgentTask<TValue>(
           note: clipTo(note, STEP_NOTE_LIMIT),
         });
       }
-      if (rewrite.value !== undefined) {
+      if (rewrite.value === undefined) {
+        // No rewritten answer, so the model gets another attempt. Telling it only that a quote "does
+        // not appear" leaves it guessing which of the three causes applies — paraphrase, fusion of
+        // two places, or invention — and a model that guesses wrong resubmits the same quote. The
+        // host has already read the bytes and worked out which one it was.
+        problem = appendCitationFeedback(problem, rewrite.feedback);
+      } else {
         const reParsed = invocation.outputSchema.safeParse(rewrite.value);
         if (reParsed.success) {
           const rechecked = citationProblems(
@@ -1008,22 +1173,31 @@ export async function runAgentTask<TValue>(
             invocation.evidenceSource,
             evidenceRoots,
             openedFiles,
+            invocation.requireStartLine === true,
           );
           if (rechecked === undefined) {
-            value = reParsed.data;
-            answered = true;
-            warnings.push(
-              'host anchored rejected citations to real repository bytes; answer accepted after re-check',
-            );
-            recordStep({
-              kind: 'note',
-              toolCalls: [],
-              toolResults: [],
-              note: 'citation rewrite accepted: every surviving quote resolves to repository bytes',
-            });
-            break;
+            const gap = contractGapOf(reParsed.data);
+            if (gap === undefined) {
+              value = reParsed.data;
+              answered = true;
+              warnings.push(
+                'host anchored rejected citations to real repository bytes; answer accepted after re-check',
+              );
+              recordStep({
+                kind: 'note',
+                toolCalls: [],
+                toolResults: [],
+                note: 'citation rewrite accepted: every surviving quote resolves to repository bytes',
+              });
+              break;
+            }
+            // Anchoring fixed every quote, so the citation complaint is spent; what is left is the part
+            // of the contract the anchored answer still does not meet.
+            contractProblem = gap;
+            problem = gap;
+          } else {
+            problem = rechecked;
           }
-          problem = rechecked;
         } else {
           problem = describeIssues(reParsed.error);
         }
@@ -1033,6 +1207,7 @@ export async function runAgentTask<TValue>(
     if (
       parsed?.success === true &&
       problem !== undefined &&
+      contractProblem === undefined &&
       invocation.evidenceSource !== undefined &&
       hostReadRounds < HOST_READ_MAX_ROUNDS &&
       toolCallCount < maxToolCalls
@@ -1064,20 +1239,37 @@ export async function runAgentTask<TValue>(
       // The parsed value, not the raw JSON: defaults and refinements are part of the contract, and a
       // `persistOutput` that receives the model's literal reply has to guess which optional arrays
       // the model happened to omit.
-      value = parsed.data;
-      answered = true;
-      break;
+      const gap = contractGapOf(parsed.data);
+      if (gap === undefined) {
+        value = parsed.data;
+        answered = true;
+        break;
+      }
+      contractProblem = gap;
+      problem = gap;
     }
 
-    if (repairs >= maxStructuredRepairs) {
+    // The reserved final call has no following step, so a repair message queued here would never be
+    // sent and the task would be recorded as AGENT_STEP_LIMIT. Name the rejection instead.
+    if (reservedFinalCall || (repairs >= maxStructuredRepairs && contractProblem === undefined)) {
       failure = {
         code: 'LLM_INVALID_RESPONSE',
         message: `final answer for "${purpose}" was rejected after ${repairs + 1} attempt(s): ${problem ?? 'unknown problem'}`,
         retryable: false,
       };
+      warnings.push(`final answer rejected: ${problem ?? 'unknown problem'}`);
+      recordStep({
+        kind: 'note',
+        toolCalls: [],
+        toolResults: [],
+        note: `final answer rejected: ${problem ?? 'unknown'}`,
+      });
       break;
     }
-    repairs += 1;
+    // A contract objection spends its own single allowance rather than a citation repair: the answer it
+    // refuses has no citation defect, so charging the citation budget for it would leave a later, real
+    // citation repair unable to run.
+    if (contractProblem === undefined) repairs += 1;
     warnings.push(`final answer rejected: ${problem ?? 'unknown problem'}`);
     messages.push({
       role: 'assistant',
@@ -1087,16 +1279,25 @@ export async function runAgentTask<TValue>(
     messages.push({
       role: 'user',
       content: [
-        'Your final answer was rejected.',
+        contractProblem === undefined
+          ? 'Your final answer was rejected.'
+          : 'Your final answer parsed and every quote in it resolved, but it is incomplete: it does not meet this task’s contract.',
         problem !== undefined && problem.includes('\n')
           ? `Problems:\n${problem}`
           : `Problems: ${problem ?? 'unknown problem'}`,
         'Fix every problem before answering again:',
         ...emptyEvidenceGuidance(problem ?? '', extracted?.value),
         '- Open with read_file every file you cite, and copy each quote exactly from the bytes you see. Never quote from memory or from the task brief.',
-        '- If a problem names a file where the text actually appears, cite that file and quote its exact text.',
-        '- If the text exists nowhere you can find, drop that evidence and record the gap instead of inventing it.',
-        'Do not resubmit your previous answer unchanged: identical citations are rejected identically.',
+        ...(contractProblem === undefined
+          ? [
+              '- If a problem names a file where the text actually appears, cite that file and quote its exact text.',
+              '- If the text exists nowhere you can find, drop that evidence and record the gap instead of inventing it.',
+              'Do not resubmit your previous answer unchanged: identical citations are rejected identically.',
+            ]
+          : [
+              '- Keep everything you already produced and add only what is missing.',
+              '- If you cannot support the missing part from this repository, record it under unknowns with the strategy that would settle it, and say plainly that you could not establish it.',
+            ]),
         'You may call your read and search tools again to fix these problems.',
         'When you are done, reply with ONLY the corrected JSON value. No prose, no code fences, no commentary.',
       ].join('\n'),
@@ -1255,6 +1456,15 @@ function resolveStatus(
   return satisfied === 0 ? 'FAILED' : 'PARTIAL';
 }
 
+/**
+ * Reads the live abort state through a call boundary. `AbortSignal.aborted` is readonly, so an inline
+ * `signal?.aborted === true` gets narrowed to `false` for the rest of the block — and a signal that
+ * fires *during* an awaited model call would then read as never aborted.
+ */
+function callerAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 function recommend(
   status: AgentTaskStatus,
   report: AcceptanceReport,
@@ -1309,6 +1519,36 @@ function collectEvidence(
   return evidence;
 }
 
+/**
+ * A structured reply the provider cut off, or whose only parseable value is a child of an
+ * unclosed document. Either one is incomplete output. Schema-checking the child reports a missing
+ * field on the wrong object and, on the last step, the loop then records a step-limit failure.
+ */
+function truncatedAnswerFailure(
+  purpose: string,
+  completion: CompletionResult,
+  text: string,
+  structured: boolean,
+): LoopFailure | undefined {
+  const extracted = structured ? tryExtractJson(text) : undefined;
+  const lengthCut = completion.finishReason === 'length';
+  const nested = extracted?.nestedFragment === true;
+  if (!lengthCut && !nested) return undefined;
+  const reason = lengthCut
+    ? `finish_reason=length after ${completion.usage.completionTokens} completion token(s)`
+    : 'the JSON document never closed';
+  const fragment = nested
+    ? ' A balanced nested JSON fragment was present and was not accepted as the report.'
+    : '';
+  return {
+    code: 'LLM_OUTPUT_TRUNCATED',
+    message:
+      `model output for "${purpose}" is incomplete (${reason}, ${text.length} character(s)). ` +
+      `The reply was cut off before a complete answer.${fragment}`,
+    retryable: false,
+  };
+}
+
 function describeIssues(error: z.ZodError): string {
   return error.issues
     .slice(0, 12)
@@ -1322,11 +1562,13 @@ function citationProblems<TValue>(
   source: (value: TValue) => readonly Finding[],
   roots: readonly string[],
   openedFiles: ReadonlySet<string>,
+  requireStartLine = false,
 ): string | undefined {
   const violations = checkFindingEvidence(source(value), {
     roots,
     openedPaths: [...openedFiles],
     maxViolations: 8,
+    requireStartLine,
   });
   if (violations.length === 0) return undefined;
   // One problem per line, numbered: the rejection is read by a model deciding what to change, and
@@ -1337,6 +1579,30 @@ function citationProblems<TValue>(
         `${index + 1}. ${violation.claimId}/${violation.evidenceId}: ${violation.problem}`,
     )
     .join('\n')}`;
+}
+
+/**
+ * The host's anchoring diagnosis, appended to the rejection the model reads.
+ *
+ * The checker above can only say a quote is absent; it never tried to locate it. The anchorer did, and
+ * its verdict distinguishes the repairs that matter — a paraphrase needs re-extraction, a fusion needs
+ * splitting into one citation per place, an invention needs the claim demoted to an unknown. Without
+ * that distinction a rejected model resubmits the same quote with different line numbers.
+ */
+function appendCitationFeedback(
+  problem: string | undefined,
+  feedback: readonly string[] | undefined,
+): string | undefined {
+  if (feedback === undefined || feedback.length === 0) return problem;
+  const lines = feedback
+    .slice(0, CITATION_FEEDBACK_MAX)
+    .map((line, index) => `${index + 1}. ${line}`)
+    .join('\n');
+  const overflow = feedback.length - CITATION_FEEDBACK_MAX;
+  const block = `the host read the cited files itself and could not locate these quotes in them:\n${lines}${
+    overflow > 0 ? `\n(+${overflow} more)` : ''
+  }`;
+  return problem === undefined ? block : `${problem}\n${block}`;
 }
 
 /**

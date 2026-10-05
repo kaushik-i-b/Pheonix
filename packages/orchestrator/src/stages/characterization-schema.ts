@@ -164,17 +164,35 @@ function endpointSummary(endpoints: readonly HttpEndpoint[]): string {
  * Built per stage run so dangling references to the specification are rejected inside the agent
  * loop — a repairable mistake — instead of failing the task after the model finished.
  */
+/** The suite stores at most this many proposals. A longer model list is cut here, not rejected. */
+const SCENARIO_CAP = 10;
+
+/**
+ * The model often answers only on the reserved final call, so a list of 11 is not repairable.
+ * Keeping the first 10 enforces the cap the prompt already states. Later entries are dropped,
+ * not rewritten.
+ */
+function capScenarioList(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const scenarios = (value as { scenarios?: unknown }).scenarios;
+  if (!Array.isArray(scenarios) || scenarios.length <= SCENARIO_CAP) return value;
+  return { ...(value as Record<string, unknown>), scenarios: scenarios.slice(0, SCENARIO_CAP) };
+}
+
 export function scenarioProposalReportSchema(known: KnownClaims, endpoints: readonly HttpEndpoint[] = []) {
-  return z
-    .object({
-      summary: z.string().min(20).max(4000),
-      scenarios: z.array(modelScenarioSchema).min(5).max(10),
-    })
-    .superRefine((report, ctx) => {
-      for (const problem of scenarioProposalProblems(report, known, endpoints)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
-      }
-    });
+  return z.preprocess(
+    capScenarioList,
+    z
+      .object({
+        summary: z.string().min(20).max(4000),
+        scenarios: z.array(modelScenarioSchema).min(5).max(SCENARIO_CAP),
+      })
+      .superRefine((report, ctx) => {
+        for (const problem of scenarioProposalProblems(report, known, endpoints)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+        }
+      }),
+  );
 }
 
 export type ScenarioProposalReport = {

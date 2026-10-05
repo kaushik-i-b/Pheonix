@@ -6,7 +6,7 @@ import {
   type ScenarioExecution,
 } from '@phoenix/shared';
 import { getByPath, leafPaths } from './template.js';
-import { classifyVolatilePaths, isTransportHeader } from './nondeterminism.js';
+import { classifyVolatilePaths, isClockReading, isTransportHeader } from './nondeterminism.js';
 import { sameValue } from './evaluate.js';
 
 /**
@@ -171,6 +171,27 @@ export function deriveAssertions(input: CaptureInput): CaptureResult {
       observedValues: values,
     };
     normalized.push({ path: assertion.path ?? '', stepId: assertion.stepId, reason, observedValues: values });
+  }
+
+  // A clock that agreed across the two legacy runs is still a clock. Restoring one snapshot makes
+  // seed timestamps identical without making them business outputs.
+  for (const assertion of assertions) {
+    if (assertion.normalized || assertion.path === undefined || !isClockReading(assertion.path)) continue;
+    const qualified = `${assertion.stepId}.${assertion.path}`;
+    const values = observed.get(qualified) ?? [assertion.expected, assertion.expected];
+    const policy = `"${assertion.path.split('.').at(-1)}" records when a process ran; a second implementation is not required to reproduce that instant`;
+    assertion.normalized = true;
+    assertion.normalization = {
+      reason: 'clock-reading',
+      policy,
+      observedValues: values,
+    };
+    normalized.push({
+      path: assertion.path,
+      stepId: assertion.stepId,
+      reason: policy,
+      observedValues: values as [unknown, unknown],
+    });
   }
 
   return { assertions, normalized, unexplainedVolatility: unexplained, truncated };

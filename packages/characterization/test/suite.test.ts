@@ -223,4 +223,28 @@ describe('captureSuite', () => {
       await server.close();
     }
   });
+
+  it('resets the target before the baseline and again before the repeat', async () => {
+    const server = await startServer(() => ({ body: '{"ok":true}' }));
+    let resets = 0;
+    try {
+      const { skipped } = await captureSuite({
+        capturedFrom: 'legacy-bank@stub',
+        generatedBy: 'characterization-engineer',
+        proposals: [proposal('CHR-RESET-1', scenario([httpStep('read', '/ok')]))],
+        knownRuleIds: RULES,
+        knownInvariantIds: INVARIANTS,
+        target: {
+          ...target(server.baseUrl),
+          reset: async () => {
+            resets += 1;
+          },
+        },
+      });
+      expect(skipped).toEqual([]);
+      expect(resets).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
 });

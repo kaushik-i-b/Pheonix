@@ -403,20 +403,33 @@ export function danglingSpecificationReferences(report: AnalystReport): string[]
 
 /** Guards the stage against persisting a specification the field-level schemas would let through. */
 export function assertSpecificationIsUsable(report: AnalystReport): void {
-  if (report.rules.length === 0 && report.invariants.length === 0) {
+  const problems = specificationUsabilityProblems(report);
+  if (problems.length > 0) {
     throw new PhoenixError(
       'SCHEMA_VALIDATION_FAILED',
-      'the analyst proposed no rules and no invariants; there is nothing to specify and nothing to test',
-      { unknowns: report.unknowns.length },
+      problems[0]!,
+      problems.length === 1 ? {} : { problems },
     );
+  }
+}
+
+export function specificationUsabilityProblems(report: AnalystReport): string[] {
+  const problems: string[] = [];
+
+  if (report.rules.length === 0 && report.invariants.length === 0) {
+    problems.push(
+      'the analyst proposed no rules and no invariants; there is nothing to specify and nothing to test',
+    );
+    return problems;
   }
 
   const seen = new Set<string>();
-  for (const id of [...report.rules.map((rule) => rule.ruleId), ...report.invariants.map((i) => i.invariantId)]) {
+  for (const id of [
+    ...report.rules.map((rule) => rule.ruleId),
+    ...report.invariants.map((i) => i.invariantId),
+  ]) {
     if (seen.has(id)) {
-      throw new PhoenixError('SCHEMA_VALIDATION_FAILED', `id ${id} is used more than once in the specification`, {
-        id,
-      });
+      problems.push(`id ${id} is used more than once in the specification`);
     }
     seen.add(id);
   }
@@ -433,21 +446,21 @@ export function assertSpecificationIsUsable(report: AnalystReport): void {
       evidence: invariant.sourceEvidence,
     })),
   ]) {
-    if (claim.status === 'OBSERVED' && claim.evidence.every((item) => item.startLine === undefined && item.symbol === undefined)) {
-      throw new PhoenixError(
-        'SCHEMA_VALIDATION_FAILED',
+    if (
+      claim.status === 'OBSERVED' &&
+      claim.evidence.every(
+        (item) => item.startLine === undefined && item.symbol === undefined,
+      )
+    ) {
+      problems.push(
         `${claim.id} is marked OBSERVED but cites no line or symbol in any file`,
-        { claimId: claim.id },
       );
     }
   }
 
   const dangling = danglingSpecificationReferences(report);
-  if (dangling.length > 0) {
-    throw new PhoenixError(
-      'SCHEMA_VALIDATION_FAILED',
-      `the specification refers to claims it does not contain: ${dangling.slice(0, 6).join('; ')}`,
-      { dangling },
-    );
+  for (const item of dangling.slice(0, 6)) {
+    problems.push(`dangling reference: ${item}`);
   }
+  return problems;
 }

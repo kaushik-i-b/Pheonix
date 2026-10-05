@@ -47,7 +47,7 @@ export type AssertionKind = z.infer<typeof assertionKindSchema>;
  * want to see.
  */
 export const assertionNormalizationSchema = z.object({
-  reason: z.enum(['varied-across-repeated-legacy-executions']),
+  reason: z.enum(['varied-across-repeated-legacy-executions', 'clock-reading']),
   policy: z.string().min(1),
   observedValues: z.array(z.unknown()).min(2).max(2),
 });

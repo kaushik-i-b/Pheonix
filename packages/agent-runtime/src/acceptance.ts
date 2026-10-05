@@ -101,6 +101,8 @@ export async function evaluateAcceptance(input: AcceptanceInput): Promise<Accept
 
   const payloadCache = new Map<ArtifactKind, { payload?: unknown; problem?: string }>();
 
+  const generatedIds = new Set(input.generated.map((artifact) => artifact.artifactId));
+
   const readPayload = (kind: ArtifactKind): { payload?: unknown; problem?: string } => {
     const cached = payloadCache.get(kind);
     if (cached !== undefined) return cached;
@@ -128,10 +130,20 @@ export async function evaluateAcceptance(input: AcceptanceInput): Promise<Accept
     }
   };
 
-  const locate = (kind: ArtifactKind, expectation: ArtifactExpectation) =>
-    expectation.relativePath === undefined
-      ? input.artifacts.latest(input.runId, kind)
-      : input.artifacts.list(input.runId, { kind }).find((meta) => meta.relativePath === expectation.relativePath);
+  const locate = (kind: ArtifactKind, expectation: ArtifactExpectation) => {
+    const candidates = input.artifacts
+      .list(input.runId, { kind })
+      .filter((meta) => generatedIds.has(meta.id));
+    if (expectation.relativePath === undefined) return candidates[candidates.length - 1];
+    return candidates.find((meta) => meta.relativePath === expectation.relativePath);
+  };
+
+  const locateAny = (kind: ArtifactKind) => {
+    const candidates = input.artifacts
+      .list(input.runId, { kind })
+      .filter((meta) => generatedIds.has(meta.id));
+    return candidates[candidates.length - 1];
+  };
 
   const payloadOf = (kind: ArtifactKind): unknown | undefined => readPayload(kind).payload;
 
@@ -201,7 +213,7 @@ export async function evaluateAcceptance(input: AcceptanceInput): Promise<Accept
     const kind = criterion.artifactKind;
     if (kind === undefined) return unsatisfied(criterion, 'criterion does not name an artifact kind');
     const expectation = expectations.get(kind);
-    const meta = expectation === undefined ? input.artifacts.latest(input.runId, kind) : locate(kind, expectation);
+    const meta = expectation === undefined ? locateAny(kind) : locate(kind, expectation);
     if (meta === undefined) {
       return unsatisfied(criterion, describeMissing(kind, expectation, input.runId), `generated: ${input.generated.length}`);
     }
@@ -212,7 +224,7 @@ export async function evaluateAcceptance(input: AcceptanceInput): Promise<Accept
     const kind = criterion.artifactKind;
     if (kind === undefined) return unsatisfied(criterion, 'criterion does not name an artifact kind');
     const expectation = expectations.get(kind);
-    const meta = expectation === undefined ? input.artifacts.latest(input.runId, kind) : locate(kind, expectation);
+    const meta = expectation === undefined ? locateAny(kind) : locate(kind, expectation);
     if (meta === undefined) return unsatisfied(criterion, describeMissing(kind, expectation, input.runId));
     const loaded = readPayload(kind);
     if (loaded.payload === undefined) return unsatisfied(criterion, loaded.problem ?? 'payload could not be read', meta.id);

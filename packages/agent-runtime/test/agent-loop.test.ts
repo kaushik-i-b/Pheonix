@@ -1,8 +1,10 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import type { LlmProvider } from '@phoenix/llm';
 import { MockLlmProvider, jsonResponse } from '@phoenix/llm/testing';
 import {
   PhoenixError,
+  agentResultSchema,
   agentTranscriptSchema,
   evidenceRefSchema,
   findingSchema,
@@ -354,6 +356,149 @@ describe('runAgentTask', () => {
 
     expect(run.result.status).toBe('FAILED');
     expect(run.result.errorCode).toBe('AGENT_STEP_LIMIT');
+    expect(run.value).toBeUndefined();
+  });
+
+  it('reserves the last permitted call for the answer when the model only ever seeks tools', async () => {
+    // The failure the SPECIFY analyst actually produced: eight calls, every one ending in tool calls,
+    // no text at all, and AGENT_STEP_LIMIT with nothing persisted. It keeps asking for tools until the
+    // loop tells it otherwise, and answers only on the call where tools are switched off.
+    const provider = new MockLlmProvider({
+      responder: (request, index) =>
+        request.toolChoice === 'none'
+          ? jsonResponse({ summary: 'fees round half-up' })
+          : { toolCalls: [readCall(FEE_SERVICE_PATH, `c${index}`)] },
+    });
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture, { budget: { maxSteps: 8, maxToolCalls: 30 } });
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'loop' },
+        outputSchema,
+      },
+      fixture.runtime,
+    );
+
+    const reserved = provider.requests.at(-1);
+    expect(reserved?.toolChoice).toBe('none');
+    expect(reserved?.messages.at(-1)?.role).toBe('user');
+    expect(reserved?.messages.at(-1)?.content).toMatch(/final model call/i);
+    expect(reserved?.messages.at(-1)?.content).toMatch(/unknown/i);
+    expect(reserved?.messages.at(-1)?.content).toMatch(/do not invent/i);
+
+    expect(run.result.status).toBe('SUCCEEDED');
+    expect(run.result.llmCalls).toBe(8);
+    expect(run.result.toolCalls).toBe(7);
+    expect(run.value?.summary).toBe('fees round half-up');
+  });
+
+  it('accepts a complete JSON answer longer than the transcript display cap', async () => {
+    const summary = `fees ${'x'.repeat(21_000)}`;
+    const text = JSON.stringify({ summary, findings: [] });
+    expect(text.length).toBeGreaterThan(20_000);
+    const provider = new MockLlmProvider({
+      responses: [{ text, finishReason: 'stop' }],
+    });
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture, { budget: { maxSteps: 2, maxToolCalls: 4 } });
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'long answer' },
+        outputSchema,
+      },
+      fixture.runtime,
+    );
+
+    expect(run.result.status).toBe('SUCCEEDED');
+    expect(run.value?.summary).toBe(summary);
+    expect(run.warnings.join('\n')).toContain('validation uses the full reply');
+
+    const transcript = agentTranscriptSchema.parse(
+      fixture.store.readJson(
+        onlyMeta(fixture.store.list(fixture.runId, { kind: 'agent.transcript' })),
+        z.unknown(),
+      ),
+    );
+    const recorded = transcript.steps.find((step) => step.kind === 'llm-call')?.assistantText ?? '';
+    expect(recorded.length).toBe(20_000);
+    expect(recorded.length).toBeLessThan(text.length);
+  });
+
+  it('reports a length-truncated reply as incomplete and does not accept its nested fragment', async () => {
+    // The nested object satisfies the output schema. Accepting it would persist a fragment of a
+    // document the provider cut off, and the fragment sits past the transcript display cap.
+    const fragment = JSON.stringify({
+      summary: 'nested fragment accepted by mistake',
+      findings: [],
+    });
+    const text = `{"preamble":"${'x'.repeat(21_000)}","report":${fragment}`;
+    expect(text.length).toBeGreaterThan(20_000);
+    const provider = new MockLlmProvider({
+      responses: [
+        {
+          text,
+          finishReason: 'length',
+          usage: { completionTokens: 8192, promptTokens: 10, totalTokens: 8202 },
+        },
+      ],
+    });
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture, { budget: { maxSteps: 8, maxToolCalls: 10 } });
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'truncated' },
+        outputSchema,
+      },
+      fixture.runtime,
+    );
+
+    expect(run.result.status).toBe('FAILED');
+    expect(run.result.errorCode).toBe('LLM_OUTPUT_TRUNCATED');
+    expect(run.result.errorCode).not.toBe('AGENT_STEP_LIMIT');
+    expect(run.value).toBeUndefined();
+    expect(run.result.llmCalls).toBe(1);
+    expect(run.result.errorMessage).toContain('finish_reason=length');
+    expect(run.result.errorMessage).toContain('8192');
+    expect(run.result.errorMessage).toContain(String(text.length));
+    expect(run.result.errorMessage).toContain('nested JSON fragment');
+    expect(run.result.errorMessage).not.toContain('Required');
+  });
+
+  it('names a schema rejection on the reserved final call instead of the step limit', async () => {
+    const provider = new MockLlmProvider({
+      responses: [jsonResponse({ findings: [] })],
+    });
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture, { budget: { maxSteps: 1, maxToolCalls: 4 } });
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'invalid final' },
+        outputSchema,
+      },
+      fixture.runtime,
+    );
+
+    expect(run.result.status).toBe('FAILED');
+    expect(run.result.errorCode).toBe('LLM_INVALID_RESPONSE');
+    expect(run.result.errorMessage).toContain('summary');
+    expect(run.result.errorMessage).not.toContain('AGENT_STEP_LIMIT');
+    expect(run.result.llmCalls).toBe(1);
     expect(run.value).toBeUndefined();
   });
 
@@ -763,11 +908,11 @@ describe('runAgentTask', () => {
     expect(fixture.sink.ofType('tool.invoked')).toHaveLength(0);
   });
 
-  it('names the paths it could not open, then stops when the read rounds run out', async () => {
-    // An answer that cites nothing real leaves `openedFiles` empty, so an unbounded loop would spend
-    // every remaining step rediscovering that. Three rounds, each naming the paths that could not be
-    // opened, and then the ordinary rejection — which by then carries the work list built from the
-    // paths the model keeps inventing.
+  it('names the paths it could not open once, then rejects with the work list', async () => {
+    // An answer that cites nothing real leaves `openedFiles` empty, so an unbounded loop would spend every
+    // remaining step rediscovering that. One round names the path that could not be opened; the path is now
+    // known missing, so the next round attempts nothing and the ordinary rejection goes out at once — it
+    // carries the work list built from the paths the model keeps inventing, which is the part that helps.
     const answer = jsonResponse({
       summary: 'the fee service rounds half up',
       findings: [{ id: 'F-INVENTED', note: 'see src/main/java/legacy/fee/FeeTables.java' }],
@@ -789,23 +934,92 @@ describe('runAgentTask', () => {
       fixture.runtime,
     );
 
-    expect(provider.callCount).toBe(4);
+    expect(provider.callCount).toBe(2);
     expect(run.result.status).toBe('FAILED');
     expect(run.result.errorMessage).toContain('you answered without opening a single file');
     expect(run.result.errorMessage).toContain(
       'read_file "src/main/java/legacy/fee/FeeTables.java"',
     );
 
-    for (const attempt of [1, 2, 3]) {
-      const handed = provider.requests[attempt]?.messages.at(-1);
-      expect(handed?.content).toContain('NOT OPENED');
-      expect(handed?.content).toContain('src/main/java/legacy/fee/FeeTables.java');
-    }
+    const handed = provider.requests[1]?.messages.at(-1);
+    expect(handed?.content).toContain('NOT OPENED');
+    expect(handed?.content).toContain('src/main/java/legacy/fee/FeeTables.java');
     expect(run.warnings.join('\n')).toContain('none of the cited paths could be opened');
 
     const attempts = run.steps.filter((step) => step.kind === 'tool-call');
-    expect(attempts).toHaveLength(3);
+    expect(attempts).toHaveLength(1);
     expect(attempts.every((step) => step.toolResults[0]?.ok === false)).toBe(true);
+  });
+
+  it('reads a definitively missing citation once, then rejects with the directory hint', async () => {
+    // The live SPECIFY failure this guards: the model cited svc/ReconciliationSvc.java, which does not
+    // exist, and every remaining step was spent re-reading that same path — a round that can only ever
+    // answer "file not found" again, and that costs a step each time. One read is enough to know the path
+    // is not there. The next rejection has to be the ordinary one, because that is the message carrying
+    // the real directory listing the model can copy a correct name out of.
+    const answer = jsonResponse({
+      summary: 'the fee engine consults a table that does not exist',
+      findings: [{ id: 'F-INVENTED', note: 'see src/main/java/legacy/fee/FeeTables.java' }],
+    });
+    const provider = new MockLlmProvider({
+      responses: [
+        { toolCalls: [readCall(FEE_SERVICE_PATH)] },
+        answer,
+        answer,
+        answer,
+        answer,
+        answer,
+      ],
+    });
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture, { budget: { maxSteps: 12, maxToolCalls: 20 } });
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'cite carefully' },
+        outputSchema,
+        evidenceSource: () => [fabricatedFinding()],
+        // One repair, so the call count below is pure round accounting: the model's own read, the single
+        // round that discovers the path is missing, the rejection that carries the directory hint, and the
+        // terminal call. A repeated read of the missing path would push the hint past the last of them.
+        maxStructuredRepairs: 1,
+      },
+      fixture.runtime,
+    );
+
+    expect(run.result.status).toBe('FAILED');
+
+    // The model opened a real file itself, so `openedFiles` is not empty and the branch that fires is the
+    // unread-cited-paths round — the one the live run took, not the nothing-read one.
+    const missingReads = run.steps.filter(
+      (step) =>
+        step.kind === 'tool-call' &&
+        step.toolCalls[0]?.name === 'read_file' &&
+        step.toolResults[0]?.ok === false,
+    );
+    expect(missingReads).toHaveLength(1);
+    expect(missingReads[0]?.note).toContain(
+      'host-initiated read: the model cited files it never opened',
+    );
+
+    // Second model call is answered by the one round that discovers the path is missing.
+    expect(provider.requests[2]?.messages.at(-1)?.content ?? '').toContain('NOT OPENED');
+
+    // Third model call gets the ordinary rejection straight away: the citation complaint plus the real
+    // sibling names, with no second host-read round in between. This is the message that was previously
+    // queued one step too late to ever be sent inside a four-step budget.
+    const immediate = provider.requests[3]?.messages.at(-1)?.content ?? '';
+    expect(immediate).toContain('cited file does not exist');
+    expect(immediate).toContain('FeeService.java');
+    expect(immediate).not.toContain('NOT OPENED');
+
+    expect(provider.callCount).toBe(4);
+    expect(
+      run.warnings.filter((warning) => warning.includes('none of the cited paths could be opened')),
+    ).toHaveLength(1);
   });
 
   it('opens the unread files behind a rejected citation and rebuilds the answer from their bytes', async () => {
@@ -1088,6 +1302,57 @@ describe('runAgentTask', () => {
     expect(run.result.status).toBe('CANCELLED');
     expect(run.result.errorCode).toBe('AGENT_CANCELLED');
     expect(provider.callCount).toBe(0);
+  });
+
+  it('aborts a model call that is still in flight and records a terminal cancellation', async () => {
+    const controller = new AbortController();
+    /**
+     * A provider that never answers on its own, so the only way out of the call is the caller's
+     * signal. The signal has to arrive in options: `completionRequestSchema` has no `signal` field,
+     * so one carried on the request is stripped and this call would hang past any deadline.
+     */
+    let sawSignal = false;
+    const provider: LlmProvider = {
+      id: 'hanging',
+      model: 'hanging-model',
+      complete(_request, options = {}) {
+        sawSignal = options.signal !== undefined;
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted by caller')), {
+            once: true,
+          });
+          controller.abort();
+        });
+      },
+    };
+    const fixture = createFixture({ provider });
+    const task = buildTask(fixture);
+
+    const run = await runAgentTask(
+      {
+        task,
+        systemPromptId: 'fixture.system',
+        userPromptId: 'fixture.task',
+        promptVariables: { hint: 'go' },
+        outputSchema,
+        signal: controller.signal,
+      },
+      fixture.runtime,
+    );
+
+    expect(sawSignal).toBe(true);
+    expect(run.result.status).toBe('CANCELLED');
+    expect(run.result.errorCode).toBe('AGENT_CANCELLED');
+    expect(run.result.llmCalls).toBe(0);
+    expect(run.result.generatedArtifacts).toEqual([]);
+
+    // A cancelled stage still leaves its own terminal record behind for diagnosis.
+    const persisted = fixture.store.readJson(
+      onlyMeta(fixture.store.list(fixture.runId, { kind: 'agent.result' })),
+      agentResultSchema,
+    );
+    expect(persisted.status).toBe('CANCELLED');
+    expect(persisted.errorCode).toBe('AGENT_CANCELLED');
   });
 
   it('records a provider failure as a typed error instead of throwing it away', async () => {

@@ -8,6 +8,9 @@ export default tseslint.config(
       '**/.next/**',
       '**/coverage/**',
       'artifacts/**',
+      // Runtime scratch: PHOENIX_WORKSPACE_ROOT holds code a live run generated, not source. Linting
+      // it makes the gate fail on another stage's output.
+      '.phoenix-workspaces/**',
       'benchmarks/**/generated/**',
       'examples/legacy-bank/**',
       'examples/modern-bank-generated/**',

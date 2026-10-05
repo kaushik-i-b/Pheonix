@@ -2,6 +2,7 @@ export { getByPath, leafPaths, substitute } from './template.js';
 export {
   TRANSPORT_RESPONSE_HEADERS,
   classifyVolatilePaths,
+  isClockReading,
   isTransportHeader,
   normalizationPolicyFor,
   type NormalizationPolicyVerdict,

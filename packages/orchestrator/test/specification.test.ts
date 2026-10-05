@@ -19,6 +19,7 @@ import {
   danglingSpecificationReferences,
   runSpecificationStage,
   specificationBrief,
+  specificationUsabilityProblems,
   toBusinessRuleSet,
 } from '../src/index.js';
 import { anchorSpecificationCitations } from '../src/stages/specification-evidence.js';
@@ -255,6 +256,21 @@ function analystReport(fixture: LegacyFixture) {
   };
 }
 
+/**
+ * The same report with every invariant removed. `analystReportSchema` deliberately puts no `.min(1)`
+ * on `invariants` — an analyst that cannot support one from repository bytes must be able to say so
+ * rather than invent one — which makes this a *valid* answer, and the loop the only thing that can
+ * object to it before it is persisted and graded.
+ */
+function rulesOnlyReport(report: ReturnType<typeof analystReport>) {
+  return {
+    ...report,
+    invariants: [],
+    rules: report.rules.map((rule) => ({ ...rule, derivedFromInvariantIds: [] })),
+    unknowns: report.unknowns.map((unknown) => ({ ...unknown, relatedInvariantIds: [] })),
+  };
+}
+
 function upstreamFindings(fixture: LegacyFixture) {
   const halfUp = citation(fixture, FEE_SERVICE_PATH, HALF_UP);
   const trigger = citation(fixture, TRIGGER_PATH, TRIGGER);
@@ -381,7 +397,7 @@ describe('specification schema', () => {
     expect(danglingSpecificationReferences(dangling)).toEqual([
       'BR-BATCH-FEE-HALF-EVEN contradicts unknown rule BR-NOT-WRITTEN',
     ]);
-    expect(() => assertSpecificationIsUsable(dangling)).toThrow(/does not contain/);
+    expect(() => assertSpecificationIsUsable(dangling)).toThrow(/dangling reference/);
   });
 
   it('refuses an OBSERVED claim that cites no line or symbol', () => {
@@ -603,6 +619,127 @@ describe('specification stage', () => {
     }
   }, 60_000);
 
+  it('persists a retry beside the attempt it supersedes instead of colliding with it', async () => {
+    const report = analystReport(fixture);
+    // The first attempt proposes rules but no invariants, is told so once by the contract round, and
+    // still cannot support one. It writes both documents and is graded PARTIAL — the state every live
+    // SPECIFY run so far has ended in. An artifact path is immutable inside a run, so a retry carrying
+    // different bytes used to be refused by the store *after* the model had already produced a valid
+    // report: the retry could never be recorded.
+    const rulesOnly = rulesOnlyReport(report);
+    const provider = new MockLlmProvider({
+      responses: [
+        readSpecSources,
+        jsonResponse(rulesOnly),
+        jsonResponse(rulesOnly),
+        readSpecSources,
+        jsonResponse(report),
+      ],
+    });
+    const sink = new InMemoryEventSink();
+    const runId = newRunId();
+    const runtime = stageRuntime(fixture, provider, sink, runId);
+
+    try {
+      const first = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+      });
+      expect(first.result.status, first.result.errorMessage ?? '').toBe('PARTIAL');
+      expect(first.artifacts.businessRules?.relativePath).toBe('specification/business-rules.json');
+      expect(first.artifacts.invariants?.relativePath).toBe('specification/invariants.json');
+
+      const second = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+      });
+
+      expect(second.result.status, second.result.errorMessage ?? '').toBe('SUCCEEDED');
+      expect(second.task.taskId).not.toBe(first.task.taskId);
+      expect(second.artifacts.businessRules?.relativePath).toBe(
+        `specification/business-rules-attempt-${second.task.taskId}.json`,
+      );
+      expect(second.artifacts.invariants?.relativePath).toBe(
+        `specification/invariants-attempt-${second.task.taskId}.json`,
+      );
+      expect(second.invariants?.invariants.map((invariant) => invariant.invariantId)).toEqual([
+        'INV-FEE-SCALE-STABLE',
+        'INV-NO-OVERDRAFT',
+      ]);
+
+      // The superseded attempt is evidence, not scratch space: it is still indexed at the path it was
+      // written to, and re-hashing the whole run finds nothing tampered with.
+      const preserved = runtime.artifacts.find(
+        runId,
+        first.artifacts.businessRules?.artifactId ?? '',
+      );
+      expect(preserved?.relativePath).toBe('specification/business-rules.json');
+      expect(runtime.artifacts.verify(runId).problems).toEqual([]);
+      const firstInvariantsOnDisk = invariantSetSchema.parse(
+        (
+          JSON.parse(
+            readFileSync(join(runtime.paths.artifactRoot, 'specification/invariants.json'), 'utf8'),
+          ) as { payload?: unknown }
+        ).payload,
+      );
+      expect(firstInvariantsOnDisk.invariants).toEqual([]);
+
+      // CHARACTERIZE and the predecessor gate both resolve through store.latest(), so the retry — not
+      // the PARTIAL attempt it supersedes — is what a downstream stage would be handed.
+      expect(runtime.artifacts.latest(runId, 'specification.business-rules')?.id).toBe(
+        second.artifacts.businessRules?.artifactId,
+      );
+      expect(runtime.artifacts.latest(runId, 'specification.invariants')?.id).toBe(
+        second.artifacts.invariants?.artifactId,
+      );
+    } finally {
+      await runtime.close();
+    }
+  }, 120_000);
+
+  it('tells the analyst a rules-only report is missing its invariants, and accepts the repair', async () => {
+    const report = analystReport(fixture);
+    const provider = new MockLlmProvider({
+      responses: [readSpecSources, jsonResponse(rulesOnlyReport(report)), jsonResponse(report)],
+    });
+    const sink = new InMemoryEventSink();
+    const runId = newRunId();
+    const runtime = stageRuntime(fixture, provider, sink, runId);
+
+    try {
+      const outcome = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+        budget: { maxSteps: 4 },
+      });
+
+      // The rules-only answer parsed cleanly and every citation in it resolved, so nothing else in the
+      // loop had a reason to refuse it. It was refused anyway, once, with the fix spelled out — and the
+      // corrected answer still fit inside the four steps the stage was given.
+      expect(outcome.result.status, outcome.result.errorMessage ?? '').toBe('SUCCEEDED');
+      expect(provider.callCount).toBe(3);
+
+      const feedback = provider.requests[2]?.messages.at(-1)?.content ?? '';
+      expect(feedback).toContain('no invariants');
+      expect(feedback).toContain('at least one invariant');
+      expect(feedback).toContain('Never invent one');
+
+      expect(outcome.invariants?.invariants.map((invariant) => invariant.invariantId)).toEqual([
+        'INV-FEE-SCALE-STABLE',
+        'INV-NO-OVERDRAFT',
+      ]);
+      expect(
+        outcome.result.acceptance.find((item) => item.criterionId === 'invariants-nonempty')
+          ?.satisfied,
+      ).toBe(true);
+    } finally {
+      await runtime.close();
+    }
+  }, 60_000);
+
   it('host-anchors an analyst citation to the repository bytes before persisting it', async () => {
     const report = analystReport(fixture);
     const nearMiss = {
@@ -707,47 +844,46 @@ describe('specification stage', () => {
     }
   }, 60_000);
 
-  it('anchors an excessively long invariant citation via its prefix lines', async () => {
+  it('refuses a citation whose invented tail outnumbers the real lines it begins with', async () => {
     const report = analystReport(fixture);
-    // Build a quote whose first lines are real FeeService content but whose full body exceeds
-    // 1500 chars by including non-contiguous filler. This mirrors a model that dumps an entire
-    // method body (or multiple methods) as a single citation.
-    const realPrefix = readFileSync(join(fixture.root, FEE_SERVICE_PATH), 'utf8')
+    const onlineFee = citation(fixture, FEE_SERVICE_PATH, 'public BigDecimal onlineFee');
+    const realHead = readFileSync(join(fixture.root, FEE_SERVICE_PATH), 'utf8')
       .split('\n')
-      .slice(
-        citation(fixture, FEE_SERVICE_PATH, 'public BigDecimal onlineFee').startLine - 1,
-        citation(fixture, FEE_SERVICE_PATH, 'public BigDecimal onlineFee').startLine + 7,
-      )
+      .slice(onlineFee.startLine - 1, onlineFee.startLine + 7)
       .join('\n');
-    const filler =
-      '\n    // --- model pasted additional unrelated method body below ---\n' +
-      Array.from(
-        { length: 60 },
-        (_, i) => `    BigDecimal step${i} = amount.add(new BigDecimal("${i}.00"));`,
-      ).join('\n');
-    const oversizedQuote = realPrefix + filler;
-    expect(oversizedQuote.length).toBeGreaterThan(1500);
+    // Eight real lines, then sixty that exist nowhere in the repository. Matching the head used to be
+    // enough to keep the claim, which admitted a mostly-invented quotation into the specification; the
+    // tail is the point here, so it has to outweigh the part that is genuine.
+    const inventedTail = Array.from(
+      { length: 60 },
+      (_, i) => `    BigDecimal step${i} = amount.add(new BigDecimal("${i}.00"));`,
+    ).join('\n');
+    expect(inventedTail.split('\n').length).toBeGreaterThan(realHead.split('\n').length);
 
-    const withLongInvariant = {
+    const mostlyInvented = {
       ...report,
-      invariants: report.invariants.map((inv, index) =>
+      invariants: report.invariants.map((invariant, index) =>
         index === 0
           ? {
-              ...inv,
+              ...invariant,
               sourceEvidence: [
                 {
                   path: FEE_SERVICE_PATH,
-                  startLine: citation(fixture, FEE_SERVICE_PATH, 'public BigDecimal onlineFee')
-                    .startLine,
-                  quote: oversizedQuote,
+                  startLine: onlineFee.startLine,
+                  quote: `${realHead}\n${inventedTail}`,
                 },
               ],
             }
-          : inv,
+          : invariant,
       ),
     };
     const provider = new MockLlmProvider({
-      responses: [readSpecSources, jsonResponse(withLongInvariant)],
+      responses: [
+        readSpecSources,
+        jsonResponse(mostlyInvented),
+        jsonResponse(mostlyInvented),
+        jsonResponse(mostlyInvented),
+      ],
     });
     const sink = new InMemoryEventSink();
     const runId = newRunId();
@@ -761,16 +897,36 @@ describe('specification stage', () => {
       });
 
       expect(outcome.result.status, outcome.result.errorMessage ?? '').toBe('SUCCEEDED');
-      expect(provider.callCount).toBe(2);
-      const inv = outcome.invariants?.invariants.find(
-        (i) => i.invariantId === 'INV-FEE-SCALE-STABLE',
+      expect(provider.callCount).toBe(4);
+
+      // The rejection the model reads has to say why, or it resubmits the same tail with new line
+      // numbers: the host located nothing contiguous, so the repair is to re-extract, not to re-guess.
+      const repair = provider.requests[2]?.messages.at(-1);
+      expect(repair?.content).toContain('citations that do not resolve');
+      expect(repair?.content).toContain('no contiguous run of its');
+      expect(repair?.content).toContain('paraphrased, fused from separate places, or invented');
+
+      // The claim is gone rather than trimmed to its plausible beginning, and the gap is recorded.
+      expect(
+        outcome.invariants?.invariants.some(
+          (invariant) => invariant.invariantId === 'INV-FEE-SCALE-STABLE',
+        ),
+      ).toBe(false);
+      expect(outcome.rules?.unknowns.map((unknown) => unknown.id)).toContain(
+        'UNK-FEE-SCALE-STABLE',
       );
-      expect(inv).toBeDefined();
-      expect(inv?.sourceEvidence.length).toBeGreaterThanOrEqual(1);
-      expect(inv?.sourceEvidence[0]?.quote).toContain(
-        'public BigDecimal onlineFee(BigDecimal amount)',
+      expect(outcome.run.warnings.join('\n')).toContain('demoted INV-FEE-SCALE-STABLE');
+      expect(JSON.stringify(outcome.invariants)).not.toContain('step59');
+
+      // Refusing one invented citation must not cost the claims that were properly evidenced.
+      expect(outcome.invariants?.invariants.map((invariant) => invariant.invariantId)).toContain(
+        'INV-NO-OVERDRAFT',
       );
-      expect(inv?.sourceEvidence[0]?.note).toContain('host-anchored');
+      expect(outcome.rules?.rules.map((rule) => rule.ruleId)).toContain('BR-ONLINE-FEE-HALF-UP');
+      expect(
+        outcome.result.acceptance.find((item) => item.criterionId === 'citations-resolve')
+          ?.satisfied,
+      ).toBe(true);
     } finally {
       await runtime.close();
     }
@@ -821,6 +977,142 @@ describe('specification stage', () => {
         outcome.result.acceptance.find((item) => item.criterionId === 'citations-resolve')
           ?.satisfied,
       ).toBe(true);
+    } finally {
+      await runtime.close();
+    }
+  }, 60_000);
+
+  it('gives in-loop feedback when an OBSERVED claim cites no line or symbol', async () => {
+    const report = analystReport(fixture);
+    const unlocated = {
+      ...report,
+      invariants: report.invariants.map((invariant, index) =>
+        index === 0
+          ? {
+              ...invariant,
+              epistemicStatus: 'OBSERVED' as const,
+              sourceEvidence: [{ path: FEE_SERVICE_PATH, quote: HALF_UP }],
+            }
+          : invariant,
+      ),
+    };
+
+    expect(specificationUsabilityProblems(analystReportSchema.parse(unlocated))).toEqual(
+      expect.arrayContaining([expect.stringContaining('cites no line or symbol')]),
+    );
+
+    const provider = new MockLlmProvider({
+      responses: [readSpecSources, jsonResponse(unlocated)],
+    });
+    const sink = new InMemoryEventSink();
+    const runId = newRunId();
+    const runtime = stageRuntime(fixture, provider, sink, runId);
+
+    try {
+      const outcome = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+        budget: { maxSteps: 4 },
+      });
+
+      expect(outcome.result.status, outcome.result.errorMessage ?? '').toBe('SUCCEEDED');
+      expect(provider.callCount).toBe(2);
+
+      const inv = outcome.invariants?.invariants.find(
+        (invariant) => invariant.invariantId === 'INV-FEE-SCALE-STABLE',
+      );
+      expect(inv).toBeDefined();
+      const ev = inv?.sourceEvidence[0];
+      expect(ev?.location?.startLine).toBeGreaterThan(0);
+    } finally {
+      await runtime.close();
+    }
+  }, 60_000);
+
+  it('does not let a failed retry satisfy acceptance using a prior attempt artifacts', async () => {
+    const report = analystReport(fixture);
+    const emptyReport = { ...report, rules: [], invariants: [] };
+
+    const provider = new MockLlmProvider({
+      responses: [
+        readSpecSources,
+        jsonResponse(report),
+        readSpecSources,
+        jsonResponse(emptyReport),
+        jsonResponse(emptyReport),
+      ],
+    });
+    const sink = new InMemoryEventSink();
+    const runId = newRunId();
+    const runtime = stageRuntime(fixture, provider, sink, runId);
+
+    try {
+      const first = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+      });
+      expect(first.result.status).toBe('SUCCEEDED');
+      expect(first.result.acceptance.filter((item) => item.satisfied).length).toBe(
+        SPECIFICATION_ACCEPTANCE_CRITERIA.length,
+      );
+
+      const second = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+      });
+      expect(second.result.status).not.toBe('SUCCEEDED');
+
+      const artifactCriteria = second.result.acceptance.filter(
+        (item) =>
+          item.criterionId === 'business-rules-present' ||
+          item.criterionId === 'invariants-present' ||
+          item.criterionId === 'business-rules-schema-valid' ||
+          item.criterionId === 'invariants-schema-valid',
+      );
+      expect(artifactCriteria.every((item) => !item.satisfied)).toBe(true);
+    } finally {
+      await runtime.close();
+    }
+  }, 120_000);
+
+  it('attaches a verified line range when a verbatim quote matches source unambiguously', async () => {
+    const report = analystReport(fixture);
+    const noLocation = {
+      ...report,
+      invariants: report.invariants.map((invariant, index) =>
+        index === 1
+          ? {
+              ...invariant,
+              sourceEvidence: [{ path: TRIGGER_PATH, quote: TRIGGER }],
+            }
+          : invariant,
+      ),
+    };
+    const provider = new MockLlmProvider({
+      responses: [readSpecSources, jsonResponse(noLocation)],
+    });
+    const sink = new InMemoryEventSink();
+    const runId = newRunId();
+    const runtime = stageRuntime(fixture, provider, sink, runId);
+
+    try {
+      const outcome = await runSpecificationStage({
+        runId,
+        runtime,
+        findings: upstreamFindings(fixture),
+      });
+
+      expect(outcome.result.status, outcome.result.errorMessage ?? '').toBe('SUCCEEDED');
+      const inv = outcome.invariants?.invariants.find(
+        (invariant) => invariant.invariantId === 'INV-NO-OVERDRAFT',
+      );
+      expect(inv).toBeDefined();
+      const ev = inv?.sourceEvidence[0];
+      expect(ev?.location?.startLine).toBeGreaterThan(0);
+      expect(ev?.location?.endLine).toBeGreaterThanOrEqual(ev?.location?.startLine ?? 0);
     } finally {
       await runtime.close();
     }

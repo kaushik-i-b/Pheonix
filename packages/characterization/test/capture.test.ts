@@ -65,6 +65,21 @@ describe('deriveAssertions', () => {
     ]);
   });
 
+  it('excuses a stable clock reading without excusing a stable balance', () => {
+    const { baseline, probe } = pair(
+      [bankRead({ createdAt: '2026-08-21T07:10:28.81881', balance: '360.50' })],
+      [bankRead({ createdAt: '2026-08-21T07:10:28.81881', balance: '360.50' })],
+    );
+
+    const result = deriveAssertions({ caseId: 'CHR-TEST', baseline, probe, targetRuleIds: [], targetInvariantIds: [] });
+
+    const clock = result.assertions.find((a) => a.path === 'responseBody.createdAt');
+    const balance = result.assertions.find((a) => a.path === 'responseBody.balance');
+    expect(clock?.normalized).toBe(true);
+    expect(clock?.normalization?.reason).toBe('clock-reading');
+    expect(balance?.normalized).toBe(false);
+  });
+
   it('keeps an identifier-named value live when legacy reproduces it exactly', () => {
     const { baseline, probe } = pair([bankRead({ requestId: 'req-1' })], [bankRead({ requestId: 'req-1' })]);
 

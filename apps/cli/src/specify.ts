@@ -63,12 +63,17 @@ export async function specifyCommand(argv: readonly string[]): Promise<number> {
   );
 
   const runtime = createRunRuntime({ config, runId });
+  // The loop's own deadline is only consulted between steps, so a single slow model call could
+  // outlast it. This aborts the in-flight request itself and still leaves a terminal result record.
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), config.limits.stageTimeoutMs);
   try {
     const outcome = await runSpecificationStage({
       runId,
       runtime,
       findings,
       discoveryArtifacts: discoveryInputs(store, runId),
+      signal: deadline.signal,
       ...(options.briefMaxChars !== undefined ? { brief: { maxChars: options.briefMaxChars } } : {}),
       ...(options.maxSteps !== undefined ? { budget: { maxSteps: options.maxSteps } } : {}),
     });
@@ -131,6 +136,7 @@ export async function specifyCommand(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${lines.join('\n')}\n`);
     return result.status === 'SUCCEEDED' ? 0 : 1;
   } finally {
+    clearTimeout(timer);
     await runtime.close();
   }
 }

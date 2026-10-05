@@ -19,7 +19,13 @@ const WEAK_PULL = 0.2;
 const MIN_INFORMATIVE_TOKENS = 2;
 const COVERAGE_MIN = 0.5;
 const CLUSTER_GAP = 3;
-const MAX_SPAN_LINES = 12;
+/**
+ * Widest contiguous span the anchorer will treat as one located citation.
+ *
+ * Exported because a citation-rejection message has to state the same limit the anchorer enforces.
+ * A message quoting a stale number sends the model back for a repair that cannot succeed.
+ */
+export const MAX_SPAN_LINES = 12;
 const EXTENSION_REACH = 2;
 const WINDOW_MIN = 2;
 const WINDOW_MAX = 5;

@@ -222,7 +222,9 @@ async function runHttpStep(
     body = substitute(request.rawBody, captured);
   } else if (request.body !== undefined) {
     body = JSON.stringify(substitute(request.body, captured));
-    if (headers['content-type'] === undefined) headers['content-type'] = 'application/json';
+    // Header names are case-insensitive. Adding `content-type` beside an existing `Content-Type`
+    // makes fetch send both, and Spring then rejects `application/json, application/json`.
+    if (!hasHeader(headers, 'content-type')) headers['content-type'] = 'application/json';
   }
 
   const timeoutMs = request.timeoutMs || (options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -253,6 +255,11 @@ async function runHttpStep(
     responseHeaders,
     responseBody: raw.json === undefined ? raw.text : raw.json,
   };
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const needle = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === needle);
 }
 
 async function readBody(response: Response): Promise<{ json?: unknown; text: string }> {

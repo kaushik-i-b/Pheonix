@@ -16,7 +16,7 @@ import {
   type ScenarioExecution,
   type Severity,
 } from '@phoenix/shared';
-import { evaluateCase, type CaseEvaluation } from '@phoenix/characterization';
+import { evaluateCase, isClockReading, type CaseEvaluation } from '@phoenix/characterization';
 
 /**
  * Differential comparison between the legacy baselines captured in a characterization suite and the
@@ -220,7 +220,9 @@ function compareCase(input: CompareCaseInput): CaseComparisonResult {
   }
 
   const modernEvaluation = evaluateCase(item, modern);
-  const mismatchEntries = unsatisfiedLive(modernEvaluation, item.assertions);
+  const liveEntries = unsatisfiedLive(modernEvaluation, item.assertions);
+  const mismatchEntries = liveEntries.filter((entry) => !isClockReading(entry.assertion.path ?? ''));
+  const clockEntries = liveEntries.filter((entry) => isClockReading(entry.assertion.path ?? ''));
 
   const mismatches: Mismatch[] = mismatchEntries.map((entry, position) =>
     buildMismatch({
@@ -255,8 +257,20 @@ function compareCase(input: CompareCaseInput): CaseComparisonResult {
       reason: assertion.normalization.reason,
     });
   }
+  for (const entry of clockEntries) {
+    normalizationApplied.push({
+      ruleId: 'clock-reading',
+      scenarioId: item.scenario.scenarioId,
+      system: 'modern',
+      path: `${entry.assertion.stepId}.${entry.assertion.path ?? entry.assertion.kind}`,
+      strategy: 'ignore',
+      before: entry.assertion.expected,
+      after: entry.result.actual,
+      reason: 'clock-reading',
+    });
+  }
 
-  const equal = modernEvaluation.passed;
+  const equal = mismatchEntries.length === 0;
   return {
     comparison: differentialComparisonSchema.parse({
       ...base,

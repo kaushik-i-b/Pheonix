@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { slugAvoidingCollision } from '../slug.js';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import type { ZodType, ZodTypeDef } from 'zod';
@@ -427,9 +428,16 @@ export function createModernizationPersister(
       assumptions: report.assumptions,
     });
 
-    const slugSuffix = repairIteration > 0 ? `-r${repairIteration}` : '';
+    const repairSuffix = repairIteration > 0 ? `-r${repairIteration}` : '';
+    const changeSlug = slugAvoidingCollision(
+      runtime.artifacts,
+      context.task.runId,
+      'implementation.change-report',
+      repairSuffix === '' ? undefined : `change-report${repairSuffix}`,
+      context.task.taskId,
+    );
     const artifact = context.writer.writeJson('implementation.change-report', changeReport, modernizationChangeReportSchema, {
-      ...(slugSuffix !== '' ? { slug: `change-report${slugSuffix}` } : {}),
+      ...(changeSlug === undefined ? {} : { slug: changeSlug }),
       title: `modern implementation (${written.length} file(s), entry ${report.entryPoint}, iteration ${repairIteration})`,
       tags: ['implementation', 'modern', 'structured', `iteration-${repairIteration}`],
       inputs: context.inputs,

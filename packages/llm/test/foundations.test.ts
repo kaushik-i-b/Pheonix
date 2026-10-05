@@ -32,7 +32,23 @@ describe('json extraction', () => {
   });
 
   it('skips an unbalanced candidate and finds the real value', () => {
+    const extracted = tryExtractJson('broken {oops and then {"ok":true}');
+    expect(extracted?.nestedFragment).toBe(false);
     expect(extractJson('broken {oops and then {"ok":true}')).toEqual({ ok: true });
+  });
+
+  it('marks a balanced child of an unclosed document as a nested fragment', () => {
+    const extracted = tryExtractJson(
+      '{"summary":"cut off","rules":[{"id":"BR-1","ok":true}',
+    );
+    expect(extracted?.nestedFragment).toBe(true);
+    expect(extracted?.value).toEqual({ id: 'BR-1', ok: true });
+  });
+
+  it('does not mark a complete document as a nested fragment', () => {
+    const extracted = tryExtractJson('{"summary":"whole report","rules":[{"id":"BR-1"}]}');
+    expect(extracted?.nestedFragment).toBe(false);
+    expect(extracted?.value).toEqual({ summary: 'whole report', rules: [{ id: 'BR-1' }] });
   });
 
   it('fails loudly when there is no JSON at all', () => {

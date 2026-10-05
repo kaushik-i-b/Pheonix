@@ -126,6 +126,9 @@ async function captureOne(
   input: CaptureSuiteInput,
   captures: ScenarioExecution[],
 ): Promise<CapturedCase | { reason: string }> {
+  const resetFailure = await resetTarget(input.target);
+  if (resetFailure !== undefined) return { reason: `${resetFailure} before the baseline` };
+
   let baseline: ScenarioExecution;
   try {
     input.onProgress?.({ caseId: proposal.caseId, phase: 'baseline' });
@@ -140,6 +143,9 @@ async function captureOne(
   if (baseline.status === 'unreachable') {
     return { reason: `legacy at ${input.target.baseUrl} never answered: ${baseline.error ?? 'no detail recorded'}` };
   }
+
+  const probeResetFailure = await resetTarget(input.target);
+  if (probeResetFailure !== undefined) return { reason: `${probeResetFailure} before the repeat` };
 
   let probe: ScenarioExecution;
   try {
@@ -191,6 +197,16 @@ function caseStatus(
   if (baseline.status === 'timeout') return 'inconclusive';
   if (capture.assertions.length === 0) return 'inconclusive';
   return selfCheck.passed ? 'passing-against-legacy' : 'failing-against-legacy';
+}
+
+async function resetTarget(target: ScenarioTarget): Promise<string | undefined> {
+  if (target.reset === undefined) return undefined;
+  try {
+    await target.reset();
+    return undefined;
+  } catch (error) {
+    return `reset failed: ${describe(error)}`;
+  }
 }
 
 function describe(error: unknown): string {

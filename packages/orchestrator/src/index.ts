@@ -53,6 +53,7 @@ export {
   modelInvariantSchema,
   modelRuleSchema,
   specificationUnknownsOf,
+  specificationUsabilityProblems,
   toBusinessRuleSet,
   toInvariantSet,
   toSpecificationFindings,
