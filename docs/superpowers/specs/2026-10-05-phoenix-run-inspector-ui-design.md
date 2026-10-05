@@ -46,8 +46,11 @@ committed). Verified against the pinned lineage
   appends to the same run — so the timeline preserves file append order, which
   is chronological (`at` is monotonic across the whole file), and must not be
   re-sorted by `seq`. Stage values seen: `DISCOVERY` (46), `SPECIFICATION`
-  (622), `CHARACTERIZATION` (145), `IMPLEMENTATION` (704), and absent (106
-  events must render under an explicit "unattributed" bucket, never dropped).
+  (622), `CHARACTERIZATION` (145), `IMPLEMENTATION` (704), `VERIFICATION`
+  (622), and absent (106 events must render under an explicit "unattributed"
+  bucket, never dropped). The 106 unattributed events are exactly the
+  `test.executed` (96) plus `repair.requested` (5) plus `repair.completed` (5)
+  events, which carry no stage field.
   Event type census: `agent.step` (666), `failure.discovered` (592),
   `tool.invoked` (393), `artifact.created` (185), `llm.completed` (184),
   `test.executed` (96), `prompt.rendered` (48), `agent.started` (24),
@@ -127,7 +130,7 @@ and are never published.
 | --- | --- |
 | `repo-root.ts` | Resolve repo root from the app location; honor env overrides. |
 | `runs.ts` | `scanRuns()`: list run directories, load each `index.json`, counts, stage coverage, verdict summary, timestamps; `featuredRun()` = latest by last event timestamp, labeled "latest". |
-| `events.ts` | `readRunEvents(runId)`: parse `events.jsonl`, sort by `seq`, `groupTimeline()` into stages + `unattributed` bucket. |
+| `events.ts` | `readRunEvents(runId)`: parse `events.jsonl` preserving file append order (never re-sorted by `seq`), `groupTimeline()` into stages + `unattributed` bucket. |
 | `tasks.ts` | `loadTaskOutcomes(runId)`: `.payload.status` per task, joined to tasks seen in events. |
 | `artifacts.ts` | `loadArtifacts(runId)`: registry entries + `canonical`/`attempt` classification + producing task outcome. |
 | `specification.ts` | `loadSpecification(runId)`: canonical + attempt business-rules and invariants, rules, invariants, unknowns, per-artifact statistics. |
