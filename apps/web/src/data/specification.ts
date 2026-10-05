@@ -393,7 +393,7 @@ function normalizeInvariant(
   };
 }
 
-function normalizeUnknown(
+export function normalizeUnknown(
   raw: unknown,
   fileName: string,
   index: number,
@@ -422,7 +422,7 @@ function normalizeUnknown(
   };
 }
 
-function normalizeEvidenceList(
+export function normalizeEvidenceList(
   raw: unknown,
   context: string,
   fileName: string,
