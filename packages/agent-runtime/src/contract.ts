@@ -34,9 +34,13 @@ export function renderContractBlock(task: AgentTask, permissions: RolePermission
 
   lines.push('### Budget');
   lines.push(
-    `- at most ${task.budget.maxSteps} reasoning steps, ${task.budget.maxToolCalls} tool calls, ${Math.round(
-      task.budget.timeoutMs / 1000,
-    )} seconds`,
+    `- ${task.budget.maxSteps} model calls in total. Every reply you send is one of them, whether it asks for tools or answers.`,
+  );
+  lines.push(
+    `- the last of those calls is reserved for your final answer: you will be told when it arrives, and you will not be able to use tools in it`,
+  );
+  lines.push(
+    `- at most ${task.budget.maxToolCalls} tool calls, ${Math.round(task.budget.timeoutMs / 1000)} seconds`,
   );
   if (task.budget.maxTokens !== undefined) lines.push(`- at most ${task.budget.maxTokens} tokens`);
   lines.push('- a task that runs out of budget is recorded as cut short, not as finished');
@@ -77,7 +81,9 @@ export function renderContractBlock(task: AgentTask, permissions: RolePermission
 
   lines.push('### Finishing');
   lines.push(
-    'Investigate with tools for as long as the budget allows. When you are done, reply with ONLY the final JSON value ' +
+    'Investigate with tools while you have calls left, and stop investigating before the reserved one: producing ' +
+      'an answer takes a call, and a call spent on another tool cannot be spent answering. ' +
+      'When you are done — or when the final-call instruction arrives — reply with ONLY the final JSON value ' +
       'described in the task. No prose before or after it, no code fences, no commentary. ' +
       'If your reply is rejected, you will be told exactly which fields failed validation.',
   );

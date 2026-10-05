@@ -1,9 +1,8 @@
 import {
   anchorQuote,
+  MAX_SPAN_LINES,
   type CitationRewriteOutcome,
   type CitationRewriteRequest,
-  type QuoteAnchorInput,
-  type QuoteAnchorResult,
 } from '@phoenix/agent-runtime';
 import type { ProposedCheck } from '@phoenix/shared';
 import { type ModelEvidence } from './discovery-schema.js';
@@ -17,8 +16,8 @@ import {
 
 const MAX_NOTES = 12;
 const NOTE_LIMIT = 500;
-const LONG_QUOTE_CHARS = 1500;
-const LONG_QUOTE_PREFIX_LINES = 8;
+const MAX_FEEDBACK = 8;
+const FEEDBACK_LIMIT = 500;
 
 type CitationRead = CitationRewriteRequest<AnalystReport>['read'];
 
@@ -37,6 +36,7 @@ export async function anchorSpecificationCitations(
 ): Promise<CitationRewriteOutcome<AnalystReport>> {
   const { value: report, read, attemptsExhausted } = request;
   const notes: string[] = [];
+  const feedback: string[] = [];
   const rules: ModelRule[] = [];
 
   for (const rule of report.rules) {
@@ -45,10 +45,11 @@ export async function anchorSpecificationCitations(
       rule.sourceEvidence,
       read,
       notes,
+      feedback,
       attemptsExhausted,
     );
     if (source.indeterminate || (source.unresolved && !attemptsExhausted)) {
-      return { notes: capNotes(notes) };
+      return rejected(notes, feedback);
     }
 
     const edgeCases: ModelEdgeCase[] = [];
@@ -58,10 +59,11 @@ export async function anchorSpecificationCitations(
         edgeCase.evidence,
         read,
         notes,
+        feedback,
         attemptsExhausted,
       );
       if (edge.indeterminate || (edge.unresolved && !attemptsExhausted)) {
-        return { notes: capNotes(notes) };
+        return rejected(notes, feedback);
       }
       if (edgeCase.evidence.length > 0 && edge.evidence.length === 0) {
         notes.push(
@@ -93,10 +95,11 @@ export async function anchorSpecificationCitations(
       invariant.sourceEvidence,
       read,
       notes,
+      feedback,
       attemptsExhausted,
     );
     if (source.indeterminate || (source.unresolved && !attemptsExhausted)) {
-      return { notes: capNotes(notes) };
+      return rejected(notes, feedback);
     }
     if (invariant.sourceEvidence.length > 0 && source.evidence.length === 0) {
       notes.push(
@@ -141,15 +144,22 @@ export async function anchorSpecificationCitations(
   };
   const parsed = analystReportSchema.safeParse(candidate);
   if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => issue.message).join('; ');
     notes.push(
       clip(
-        `the rewritten specification is still not schema-valid and was not returned: ${parsed.error.issues
-          .map((issue) => issue.message)
-          .join('; ')}`,
+        `the rewritten specification is still not schema-valid and was not returned: ${issues}`,
         NOTE_LIMIT,
       ),
     );
-    return { notes: capNotes(notes) };
+    // The host's own rewrite came back invalid, so nothing is returned and the model answers again.
+    // Saying only "still not schema-valid" leaves it guessing which field, so the issues are carried
+    // into the rejection; it leads the list because the per-citation diagnoses below are capped.
+    const schemaFeedback = clip(
+      `the host's citation rewrite did not produce a schema-valid specification: ${issues}. ` +
+        `Resubmit with short exact quotes for every claim you keep, and record anything you cannot support under unknowns`,
+      FEEDBACK_LIMIT,
+    );
+    return rejected(notes, [schemaFeedback, ...feedback]);
   }
   return { value: parsed.data, notes: capNotes(notes) };
 }
@@ -159,6 +169,7 @@ async function anchorEvidenceList(
   evidence: readonly ModelEvidence[],
   read: CitationRead,
   notes: string[],
+  feedback: string[],
   attemptsExhausted: boolean,
 ): Promise<EvidenceListOutcome> {
   const kept: ModelEvidence[] = [];
@@ -181,6 +192,9 @@ async function anchorEvidenceList(
           NOTE_LIMIT,
         ),
       );
+      feedback.push(
+        clip(`${claimId}/ev-${index + 1} (${item.path}): ${outcome.reason}`, FEEDBACK_LIMIT),
+      );
     }
   }
   return { evidence: kept, unresolved, indeterminate };
@@ -200,7 +214,7 @@ async function anchorEvidenceItem(
       definitive: outcome.definitive === true,
     };
   }
-  const anchored = anchorLongOrShort({
+  const anchored = anchorQuote({
     fileText: outcome.text,
     quote: item.quote,
     ...(item.startLine !== undefined ? { citedStartLine: item.startLine } : {}),
@@ -213,7 +227,7 @@ async function anchorEvidenceItem(
   ) {
     return {
       kind: 'unresolved',
-      reason: `its quote was not found in the file (best similarity ${anchored.score.toFixed(2)}); it may have been paraphrased or invented`,
+      reason: unanchoredReason(anchored.score, item.quote),
       definitive: true,
     };
   }
@@ -275,23 +289,34 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function anchorLongOrShort(input: QuoteAnchorInput): QuoteAnchorResult {
-  const result = anchorQuote(input);
-  if (result.kind !== 'unresolved' || input.quote.length <= LONG_QUOTE_CHARS) return result;
-
-  const prefix = firstNonBlankLines(input.quote, LONG_QUOTE_PREFIX_LINES);
-  if (prefix === undefined) return result;
-
-  return anchorQuote({ ...input, quote: prefix });
+/** A rewrite that proves nothing: the loop keeps the rejection and gives the model another attempt. */
+function rejected(
+  notes: readonly string[],
+  feedback: readonly string[],
+): CitationRewriteOutcome<AnalystReport> {
+  return {
+    notes: capNotes(notes),
+    ...(feedback.length > 0 ? { feedback: capFeedback(feedback) } : {}),
+  };
 }
 
-function firstNonBlankLines(text: string, count: number): string | undefined {
-  const kept: string[] = [];
-  for (const line of text.split('\n')) {
-    if (line.trim().length > 0) {
-      kept.push(line);
-      if (kept.length >= count) break;
-    }
-  }
-  return kept.length >= 2 ? kept.join('\n') : undefined;
+function capFeedback(feedback: readonly string[]): string[] {
+  return feedback.slice(0, MAX_FEEDBACK);
+}
+
+/**
+ * Why a quote did not anchor, and what a resubmission has to look like.
+ *
+ * "Not found" alone leaves the model to guess between paraphrase, fusion of two places, and
+ * invention, and the three need different repairs. The span limit is read from the anchorer rather
+ * than restated, so this message can never promise a citation length the gate would then refuse.
+ */
+function unanchoredReason(score: number, quote: string): string {
+  const nonBlank = quote.split('\n').filter((line) => line.trim().length > 0).length;
+  return (
+    `no contiguous run of its ${nonBlank} quoted line(s) appears in the file (best similarity ${score.toFixed(2)}); ` +
+    `the quote was paraphrased, fused from separate places, or invented. Re-extract at most ${MAX_SPAN_LINES} ` +
+    `contiguous lines copied exactly from the bytes read_file returned, cite each supporting place ` +
+    `separately, or drop the claim and record it under unknowns`
+  );
 }

@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   canonicalizePath,
   pathIsInsideAny,
@@ -30,6 +30,10 @@ import type { CustomCheck } from './acceptance.js';
  * contains the text turns the rejection into something the model can repair honestly. The hint is
  * a plain substring search over the same bytes — it vouches for where text lives, never for what
  * it means.
+ *
+ * A rejected path that does not exist gets the same treatment from the other direction: the nearest
+ * real directory is listed, because the name a model should have used is exactly the thing it could
+ * not guess. Neither hint relaxes the check — the citation still has to resolve to real bytes.
  */
 
 export interface EvidenceCheckOptions {
@@ -48,6 +52,8 @@ export interface EvidenceCheckOptions {
   maxFileBytes?: number;
   /** Cap on files scanned for the "the same text appears elsewhere" repair hint. */
   maxHintScanFiles?: number;
+  /** When true, source-code evidence without a startLine is a violation triggering rewrite. */
+  requireStartLine?: boolean;
 }
 
 export interface EvidenceViolation {
@@ -63,6 +69,8 @@ const DEFAULT_MAX_HINT_SCAN_FILES = 2_000;
 const HINT_MATCH_LIMIT = 3;
 /** Never scanned for hints: version-control internals and dependency trees drown out real sources. */
 const HINT_SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist']);
+/** Cap on directory entries named in a missing-path hint: enough to reveal the real neighbour. */
+const MISSING_PATH_HINT_LIMIT = 12;
 
 /** Either the file's text, or the reason it could not be verified. Never neither. */
 interface LoadedFile {
@@ -82,6 +90,7 @@ export function checkFindingEvidence(
   const maxViolations = options.maxViolations ?? DEFAULT_MAX_VIOLATIONS;
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxHintScanFiles = options.maxHintScanFiles ?? DEFAULT_MAX_HINT_SCAN_FILES;
+  const requireStartLine = options.requireStartLine === true;
   const contents = new Map<string, LoadedFile>();
   const violations: EvidenceViolation[] = [];
 
@@ -155,7 +164,12 @@ export function checkFindingEvidence(
         continue;
       }
       if (!existsSync(resolved) || !statSync(resolved).isFile()) {
-        push(finding.id, evidence, `cited file does not exist`, location.path);
+        push(
+          finding.id,
+          evidence,
+          `cited file does not exist${missingPathHint(resolved, roots)}`,
+          location.path,
+        );
         continue;
       }
       if (opened !== undefined && evidence.kind === 'source-code' && !opened.has(resolved)) {
@@ -188,6 +202,15 @@ export function checkFindingEvidence(
           finding.id,
           evidence,
           `cited line ${location.endLine} is past the end of the file (${lineCount} lines)`,
+          location.path,
+        );
+      }
+
+      if (requireStartLine && evidence.kind === 'source-code' && location.startLine === undefined) {
+        push(
+          finding.id,
+          evidence,
+          `source-code evidence for ${location.path} cites no line number; cite the startLine where the quoted text begins`,
           location.path,
         );
       }
@@ -293,6 +316,55 @@ export function resolveCitedPath(cited: string, roots: readonly string[]): strin
   const candidates = isAbsolute(cited) ? [canonicalizePath(resolve(cited))] : roots.map((root) => canonicalizePath(join(root, cited)));
   for (const candidate of candidates) {
     if (pathIsInsideAny(candidate, roots)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * What the repository really has where the model pointed.
+ *
+ * An invented path is the one failure a model cannot repair from the rejection alone: the name it
+ * should have used is precisely what it could not guess. Listing the nearest real directory turns a
+ * dead end into names it can copy. Grounding, not laundering — exactly like `elsewhereHint`, the
+ * citation still has to resolve to real bytes before anything accepts it.
+ *
+ * Directories are listed alongside files, with a trailing slash. A model that abbreviates a package
+ * name misses the directory, not just the file, and a hint that named only files would fall silent in
+ * exactly the case it is needed most.
+ */
+function missingPathHint(resolved: string, roots: readonly string[]): string {
+  const directory = nearestExistingDirectory(resolved, roots);
+  if (directory === undefined) return '';
+  let names: string[];
+  try {
+    names = readdirSync(directory, { withFileTypes: true })
+      .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+      .sort((left, right) => left.localeCompare(right));
+  } catch {
+    return '';
+  }
+  if (names.length === 0) return '';
+  const root = roots.find((candidate) => !relative(candidate, directory).startsWith('..')) ?? directory;
+  const listed = names.slice(0, MISSING_PATH_HINT_LIMIT);
+  const overflow = names.length - listed.length;
+  const where = relative(root, directory);
+  return `; ${where === '' ? 'the repository root' : `${where}/`} really contains ${listed.join(', ')}${
+    overflow > 0 ? ` (+${overflow} more)` : ''
+  } — cite one of those, or record the claim under unknowns`;
+}
+
+/** The cited path itself if it is a directory, otherwise the closest ancestor that exists in a root. */
+function nearestExistingDirectory(resolved: string, roots: readonly string[]): string | undefined {
+  let directory = resolved;
+  while (pathIsInsideAny(directory, roots)) {
+    try {
+      if (statSync(directory).isDirectory()) return directory;
+    } catch {
+      // Not there yet: keep climbing toward a directory that is.
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
   }
   return undefined;
 }

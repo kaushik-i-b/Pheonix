@@ -86,6 +86,21 @@ describe('completeStructured', () => {
     expect(provider.callCount).toBe(1);
   });
 
+  it('rejects a token-limit cut instead of schema-checking the nested fragment', async () => {
+    // The nested object is itself schema-valid. Accepting it would report success for a document
+    // the provider cut off before the outer value closed.
+    const fragment = JSON.stringify({ rules: [{ id: 'BR-1', confidence: 0.5 }] });
+    const text = `{"summary":"cut off","wrapped":${fragment}`;
+    const provider = new MockLlmProvider({
+      responses: [{ text, finishReason: 'length', usage: { completionTokens: 8192, promptTokens: 10, totalTokens: 8202 } }],
+    });
+    await expect(completeStructured({ provider, schema: ruleSchema, request: request() })).rejects.toMatchObject({
+      code: 'LLM_OUTPUT_TRUNCATED',
+      message: expect.stringContaining('nested JSON fragment'),
+    });
+    expect(provider.callCount).toBe(1);
+  });
+
   it('notes when JSON was wrapped in prose but still usable', async () => {
     const provider = new MockLlmProvider({
       responses: ['```json\n{"rules":[]}\n```'],

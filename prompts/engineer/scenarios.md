@@ -1,6 +1,6 @@
 ---
 id: engineer.scenarios
-version: 1.0.1
+version: 1.0.2
 description: Task prompt that turns the specification's claims into a bounded set of executable characterization scenarios.
 audience: characterization-engineer
 outputSchemaId: engineer.report
@@ -75,7 +75,7 @@ describes the system you are probing.
 Field rules — a reply that violates them is rejected and you will be told which field failed:
 
 * `summary`: 20–4000 characters.
-* `scenarios`: 5 to 10 entries.
+* `scenarios`: write 6 entries, and never more than 8. The report is rejected below 5. Entries past the 10th are dropped, so put every invariant probe inside the first 6.
 * `scenarios[].title`: 5–300 characters. `description`: 10–4000 characters. `rationale`:
   10–2000 characters. `hypothesis`: 10–2000 characters, phrased as a prediction.
 * `scenarios[].category`: `normal-path`, `boundary`, `failure`, `retry`, `concurrency`,

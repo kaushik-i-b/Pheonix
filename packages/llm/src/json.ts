@@ -49,21 +49,47 @@ export interface ExtractJsonResult {
   /** Text surrounding the JSON value, kept so callers can log what the model actually said. */
   leadingText: string;
   trailingText: string;
+  /**
+   * True when `value` is a complete object or array nested inside an earlier `{` or `[` that
+   * itself looks like JSON and never closed. That is what a token-limit cut produces: the outer
+   * report is unfinished, and the first balanced child is not the report.
+   */
+  nestedFragment: boolean;
+}
+
+/**
+ * An opening brace that is the start of a JSON value, as opposed to a stray `{` in prose.
+ * A stray brace must not hide a later complete value; an unclosed JSON document must.
+ */
+function looksLikeJsonContainer(text: string, index: number): boolean {
+  const opening = text[index];
+  let cursor = index + 1;
+  while (cursor < text.length && /\s/u.test(text[cursor] ?? '')) cursor += 1;
+  const next = text[cursor];
+  if (next === undefined) return true;
+  if (opening === '{') return next === '"' || next === '}';
+  return next === ']' || next === '"' || next === '{' || next === '[' || next === '-' || /[0-9tfn]/u.test(next);
 }
 
 export function tryExtractJson(text: string): ExtractJsonResult | undefined {
   const candidate = stripCodeFences(text);
   const searchIn = candidate.length > 0 ? candidate : text;
+  /** Index of the first unclosed JSON container. A value found after it is a nested fragment. */
+  let incompleteAt: number | undefined;
   for (let index = 0; index < searchIn.length; index += 1) {
     const char = searchIn[index];
     if (char !== '{' && char !== '[') continue;
     const slice = balancedSlice(searchIn, index);
-    if (slice === undefined) continue;
+    if (slice === undefined) {
+      if (incompleteAt === undefined && looksLikeJsonContainer(searchIn, index)) incompleteAt = index;
+      continue;
+    }
     try {
       return {
         value: JSON.parse(slice) as unknown,
         leadingText: searchIn.slice(0, index).trim(),
         trailingText: searchIn.slice(index + slice.length).trim(),
+        nestedFragment: incompleteAt !== undefined && index > incompleteAt,
       };
     } catch {
       // Not valid JSON at this offset; keep scanning for the next candidate.

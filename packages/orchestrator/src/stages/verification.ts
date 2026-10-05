@@ -17,6 +17,7 @@ import {
   type VerificationVerdict,
 } from '@phoenix/shared';
 import { executeScenario, type ScenarioTarget } from '@phoenix/characterization';
+import { slugAvoidingCollision } from '../slug.js';
 import {
   buildDifferentialReport,
   clipTo,
@@ -217,10 +218,11 @@ export async function runVerificationStage(options: VerificationStageOptions): P
     ...(options.now !== undefined ? { now: options.now } : {}),
   });
 
+  const taskId = options.taskId ?? newTaskId();
   const writer = createArtifactWriter({
     store: runtime.artifacts,
     events: runtime.events,
-    run: { runId, stage: 'VERIFICATION', role: VERIFICATION_ROLE, taskId: options.taskId ?? newTaskId() },
+    run: { runId, stage: 'VERIFICATION', role: VERIFICATION_ROLE, taskId },
     generator: VERIFICATION_GENERATOR,
     inputs: [
       ...(options.suiteArtifactId !== undefined
@@ -237,14 +239,28 @@ export async function runVerificationStage(options: VerificationStageOptions): P
         : []),
     ],
   });
-  const slugSuffix = repairIteration > 0 ? `-r${repairIteration}` : '';
+  const repairSuffix = repairIteration > 0 ? `-r${repairIteration}` : '';
+  const reportSlug = slugAvoidingCollision(
+    runtime.artifacts,
+    runId,
+    'verification.differential-report',
+    repairSuffix === '' ? undefined : `differential-report${repairSuffix}`,
+    taskId,
+  );
+  const verdictSlug = slugAvoidingCollision(
+    runtime.artifacts,
+    runId,
+    'verification.verdict',
+    repairSuffix === '' ? undefined : `verdict${repairSuffix}`,
+    taskId,
+  );
   const reportArtifact = writer.writeJson('verification.differential-report', report, differentialReportSchema, {
-    ...(slugSuffix !== '' ? { slug: `differential-report${slugSuffix}` } : {}),
+    ...(reportSlug === undefined ? {} : { slug: reportSlug }),
     title: `${report.statistics.equal}/${report.statistics.scenarios} equivalent, ${report.statistics.mismatches} mismatch(es)`,
     tags: ['verification', 'differential', `iteration-${repairIteration}`],
   });
   const verdictArtifact = writer.writeJson('verification.verdict', verdict, verificationVerdictSchema, {
-    ...(slugSuffix !== '' ? { slug: `verdict${slugSuffix}` } : {}),
+    ...(verdictSlug === undefined ? {} : { slug: verdictSlug }),
     title: `differential verdict: ${verdict.verdict} (iteration ${repairIteration})`,
     tags: ['verification', 'verdict', verdict.verdict.toLowerCase()],
   });

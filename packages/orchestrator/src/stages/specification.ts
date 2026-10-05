@@ -34,6 +34,7 @@ import {
   analystReportSchema,
   assertSpecificationIsUsable,
   specificationUnknownsOf,
+  specificationUsabilityProblems,
   toBusinessRuleSet,
   toInvariantSet,
   toSpecificationFindings,
@@ -73,6 +74,8 @@ export interface SpecificationStageOptions {
   brief?: BriefOptions;
   budget?: Partial<TaskBudget>;
   objective?: string;
+  /** Workload-specific guidance appended to the task context (not the generic prompt). */
+  workloadContext?: string;
   attempt?: number;
   repairIteration?: number;
   parentTaskId?: TaskId;
@@ -102,6 +105,7 @@ export async function runSpecificationStage(
   const taskId = options.taskId ?? newTaskId();
   const brief = specificationBrief(findings, options.brief ?? {});
   const targetRoot = runtime.paths.legacyRoot;
+  const attemptSuffix = specificationAttemptSuffix(runtime, runId, taskId);
 
   const inputs = (options.discoveryArtifacts ?? []).map(toInput);
 
@@ -111,7 +115,7 @@ export async function runSpecificationStage(
     stage: 'SPECIFICATION',
     role: SPECIFICATION_ROLE,
     objective: options.objective ?? DEFAULT_OBJECTIVE,
-    context: buildContext(findings, brief, targetRoot),
+    context: buildContext(findings, brief, targetRoot, options.workloadContext),
     inputArtifacts: inputs,
     allowedTools: DEFAULT_ROLE_PERMISSIONS[SPECIFICATION_ROLE].tools,
     permissions: runtime.permissionsFor(SPECIFICATION_ROLE),
@@ -147,6 +151,8 @@ export async function runSpecificationStage(
           collectedBy: `citation-check:${taskId}`,
         }),
       rewriteCitations: anchorSpecificationCitations,
+      requireStartLine: true,
+      contractGap: specificationContractGap,
       expectations: SPECIFICATION_EXPECTATIONS,
       customChecks: {
         'specification-consistent': specificationConsistencyCheck(targetRoot),
@@ -154,7 +160,7 @@ export async function runSpecificationStage(
         // run's own artifacts must never count as a place a quote can live.
         'evidence-exists': evidenceExistsCheck({ roots: [targetRoot] }),
       },
-      persistOutput: createSpecificationPersister(targetRoot),
+      persistOutput: createSpecificationPersister(targetRoot, attemptSuffix),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     },
     runtime.agent,
@@ -204,6 +210,63 @@ function readBack<T>(
   const meta = runtime.artifacts.find(runId, artifact.artifactId);
   if (meta === undefined) return undefined;
   return schema.parse(runtime.artifacts.readJson(meta, schema));
+}
+
+/**
+ * Zero invariants is a shortfall the schema deliberately cannot express: `analystReportSchema` puts no
+ * minimum on `invariants`, because an analyst that cannot support one from repository bytes has to be
+ * able to say so, and `demoteUnsupportedClaims` may legitimately empty the array by demoting an
+ * unevidenced invariant to an unknown. Without an objection inside the loop the report parses, every
+ * citation in it resolves, it is persisted, and only the acceptance criteria afterwards notice that
+ * `invariants-nonempty` failed — so the model is never told, and never gets the chance to fix it.
+ *
+ * The same applies to the usability checks in `assertSpecificationIsUsable`: duplicate ids,
+ * OBSERVED-without-line-or-symbol, and dangling cross-references would be caught only by the
+ * persister after the loop, leaving the model no chance to repair. This callback raises them once
+ * inside the loop and never as a hard failure: a PARTIAL specification with a recorded limitation is
+ * diagnosable, an invented invariant is not.
+ */
+function specificationContractGap(report: AnalystReport): string | undefined {
+  const parts: string[] = [];
+
+  if (report.invariants.length === 0) {
+    parts.push(
+      'the report proposes no invariants, and a specification of rules alone cannot be checked: an invariant is what a characterization or differential test asserts, so without one there is nothing to run against the legacy system.',
+      'Derive at least one invariant from a property this repository actually enforces — a bound checked before a write, a scale or rounding fixed at the point of calculation, a total recomputed rather than stored, a constraint or trigger in the schema — and give it sourceEvidence quoted verbatim from the file that enforces it.',
+      'Never invent one. If no invariant can be supported from these bytes, keep the rules you have and record the limitation under unknowns instead: name the invariant you looked for, say why the evidence does not establish it, and give the resolutionStrategy that would settle it.',
+      'Do not restate a rule as an invariant. A rule says what the system does; an invariant says what must always hold, and how that would be checked.',
+    );
+  }
+
+  const usabilityProblems = specificationUsabilityProblems(report);
+  if (usabilityProblems.length > 0) {
+    parts.push(
+      `The specification has ${usabilityProblems.length} usability problem(s) that would prevent it from being persisted:`,
+      ...usabilityProblems.map((problem) => `- ${problem}`),
+      'Fix each problem: an OBSERVED claim must cite at least one startLine or symbol, ids must be unique, and every cross-reference must name a claim in this same report.',
+    );
+  }
+
+  return parts.length === 0 ? undefined : parts.join('\n');
+}
+
+/**
+ * The first specification attempt of a run writes the canonical `specification/business-rules.json`
+ * and `specification/invariants.json` that the acceptance criteria and every downstream reader name.
+ * An artifact path is immutable inside a run, so a later attempt carrying different bytes would be
+ * refused by the store — after the model had already produced a report worth keeping. Naming the
+ * retry's documents after its own task id lets it persist beside the earlier attempt, and leaves
+ * every version a decision was based on in the tree.
+ */
+function specificationAttemptSuffix(
+  runtime: RunRuntime,
+  runId: RunId,
+  taskId: TaskId,
+): string | undefined {
+  const prior = runtime.artifacts.list(runId, {
+    kinds: ['specification.business-rules', 'specification.invariants'],
+  });
+  return prior.length === 0 ? undefined : `attempt-${taskId}`;
 }
 
 export const SPECIFICATION_CONSTRAINTS = [
@@ -260,7 +323,7 @@ export const SPECIFICATION_CONSTRAINTS = [
 export const SPECIFICATION_ACCEPTANCE_CRITERIA = [
   {
     id: 'business-rules-present',
-    description: 'specification/business-rules.json exists.',
+    description: 'This attempt persisted a specification.business-rules artifact.',
     kind: 'artifact-present',
     artifactKind: 'specification.business-rules',
   },
@@ -272,7 +335,7 @@ export const SPECIFICATION_ACCEPTANCE_CRITERIA = [
   },
   {
     id: 'invariants-present',
-    description: 'specification/invariants.json exists.',
+    description: 'This attempt persisted a specification.invariants artifact.',
     kind: 'artifact-present',
     artifactKind: 'specification.invariants',
   },
@@ -468,6 +531,8 @@ function citesALine(
  */
 export function createSpecificationPersister(
   targetRoot: string,
+  /** Set on every attempt after a run's first, so the retry does not collide with its predecessor. */
+  attemptSuffix?: string,
 ): (report: AnalystReport, context: OutputContext) => OutputContribution {
   return (report, context) => {
     assertSpecificationIsUsable(report);
@@ -480,6 +545,12 @@ export function createSpecificationPersister(
     const invariantSet = toInvariantSet(report, attribution);
     const title = (count: number, noun: string) =>
       `${count} ${noun}${count === 1 ? '' : 's'} (${report.unknowns.length} recorded unknown(s))`;
+    // A slug replaces the kind's default basename rather than extending it, so it has to carry that
+    // basename: a bare `attempt-<taskId>` would put both documents on one path.
+    const slugOf = (basename: string) =>
+      attemptSuffix === undefined ? undefined : `${basename}-${attemptSuffix}`;
+    const businessRulesSlug = slugOf('business-rules');
+    const invariantsSlug = slugOf('invariants');
 
     const businessRules = context.writer.writeJson(
       'specification.business-rules',
@@ -489,6 +560,7 @@ export function createSpecificationPersister(
         title: title(ruleSet.rules.length, 'business rule'),
         tags: ['specification', 'business-rules', 'structured'],
         inputs: context.inputs,
+        ...(businessRulesSlug !== undefined ? { slug: businessRulesSlug } : {}),
       },
     );
     const invariants = context.writer.writeJson(
@@ -499,6 +571,7 @@ export function createSpecificationPersister(
         title: title(invariantSet.invariants.length, 'invariant'),
         tags: ['specification', 'invariants', 'structured'],
         inputs: context.inputs,
+        ...(invariantsSlug !== undefined ? { slug: invariantsSlug } : {}),
       },
     );
 
@@ -612,13 +685,20 @@ function withheldOf(item: EvidenceItem): string {
   return ` — ${parts.join(', ')} in discovery/findings.json, text withheld here: open the file`;
 }
 
-function buildContext(findings: DiscoveryFindings, brief: string, targetRoot: string): string {
-  return [
+function buildContext(
+  findings: DiscoveryFindings,
+  brief: string,
+  targetRoot: string,
+  workloadContext?: string,
+): string {
+  const lines = [
     `Repository under specification: ${targetRoot}`,
     `Upstream discovery recorded ${findings.findings.length} finding(s) and ${findings.openQuestions.length} open question(s).`,
     `A ${brief.length}-character brief of those findings and their citations follows in your instructions. Citations are locations, not text: open every file you intend to rely on with your tools and read the surrounding code before you turn an observation into a rule.`,
     'Discovery may itself have been wrong. Where the code contradicts a finding, specify what the code says and record the contradiction.',
-  ].join('\n');
+  ];
+  if (workloadContext !== undefined) lines.push('', workloadContext);
+  return lines.join('\n');
 }
 
 function clip(text: string, max: number): string {

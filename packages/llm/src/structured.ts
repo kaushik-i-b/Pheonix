@@ -54,6 +54,28 @@ export async function completeStructured<TSchema extends z.ZodTypeAny>(
     usage = addUsage(usage, result.usage);
 
     const extracted = tryExtractJson(result.text);
+    if (result.finishReason === 'length' || extracted?.nestedFragment === true) {
+      // The provider cut the reply, or the only parseable value sits inside an unclosed document.
+      // Schema-checking that fragment reports a missing field on the wrong object.
+      const fragment =
+        extracted?.nestedFragment === true
+          ? ' A balanced nested JSON fragment was present and was not accepted as the report.'
+          : '';
+      const reason =
+        result.finishReason === 'length'
+          ? `finish_reason=length after ${result.usage.completionTokens} completion token(s)`
+          : 'the JSON document never closed';
+      throw new PhoenixError(
+        'LLM_OUTPUT_TRUNCATED',
+        `model output for "${options.request.purpose}" is incomplete (${reason}, ${result.text.length} character(s)). The reply was cut off before a complete answer.${fragment}`,
+        {
+          purpose: options.request.purpose,
+          ...(result.finishReason !== undefined ? { finishReason: result.finishReason } : {}),
+          responseLength: result.text.length,
+          nestedFragment: extracted?.nestedFragment === true,
+        },
+      );
+    }
     if (extracted === undefined) {
       const problem = `the response contained no parseable JSON value`;
       if (attempt === maxRepairs) {
@@ -106,6 +128,8 @@ function pushRepair(
   warnings.push(`response rejected: ${problem}`);
   messages.push({
     role: 'assistant',
+    // Repair history only. The value checked above is `result.text` in full; this cap must not
+    // be applied to the text passed to JSON.parse.
     content: rejectedText.slice(0, 20_000),
     toolCalls: [],
   });

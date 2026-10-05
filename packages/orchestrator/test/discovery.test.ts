@@ -539,11 +539,12 @@ describe('runDiscoveryStage', () => {
   });
 
   it('drops the citation no file can vouch for and keeps the finding that still has real evidence', async () => {
-    // The escalation ladder, end to end. A fabricated citation buys the model three ghost-reading
-    // rounds (the host names the path that cannot be opened), then two repair rounds that carry the
-    // rejection back to it — and on the last attempt, when no repair remains, the host anchors what
-    // it can against real bytes. The citation no file supports is dropped; the finding survives on
-    // the evidence that did resolve; nothing unverifiable is persisted.
+    // The escalation ladder, end to end. A fabricated citation is caught by the citation anchoring
+    // step, which reads the file (caching the result), discovers it does not exist, and rejects
+    // the answer. The missing path is registered so ghost-reading rounds are skipped. After two
+    // repair rounds the attempts are exhausted, and the host anchors what it can against real bytes.
+    // The citation no file supports is dropped; the finding survives on the evidence that did
+    // resolve; nothing unverifiable is persisted.
     const drifted = driftOneCitation(evidenceBasedReport());
 
     await withRuntime(
@@ -552,15 +553,12 @@ describe('runDiscoveryStage', () => {
         jsonResponse(drifted),
         jsonResponse(drifted),
         jsonResponse(drifted),
-        jsonResponse(drifted),
-        jsonResponse(drifted),
-        jsonResponse(drifted),
       ],
       async ({ runtime, runId, provider }) => {
         const outcome = await runDiscoveryStage({ runId, runtime, analysis: fixture.analysis });
 
         expect(outcome.result.status).toBe('SUCCEEDED');
-        expect(provider.callCount).toBe(7);
+        expect(provider.callCount).toBe(4);
         expect(outcome.artifacts.findingsJson).toBeDefined();
 
         const finding = outcome.findings?.findings.find((item) => item.id === 'F-FEE-ROUNDING-DRIFT');
@@ -569,9 +567,7 @@ describe('runDiscoveryStage', () => {
         expect(finding?.evidence[0]?.quote).toContain('RoundingMode.HALF_EVEN');
 
         const warnings = outcome.run.warnings;
-        // Three rounds named the path that could not be opened...
-        expect(warnings.filter((warning) => warning.includes('none of the cited paths could be opened'))).toHaveLength(3);
-        // ...two repair rounds carried the rejection back to the model...
+        // Two repair rounds carried the rejection back to the model...
         expect(warnings.filter((warning) => warning.startsWith('final answer rejected:'))).toHaveLength(2);
         // ...and the last attempt dropped exactly the citation no file could vouch for.
         expect(warnings.some((warning) => warning.includes('dropped citation F-FEE-ROUNDING-DRIFT/ev-1'))).toBe(true);

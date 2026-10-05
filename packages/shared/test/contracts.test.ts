@@ -25,6 +25,7 @@ import {
   findPricing,
   hashStable,
   initialStageRecords,
+  invariantIdSchema,
   invariantSchema,
   maxSeverity,
   mismatchSchema,
@@ -77,6 +78,13 @@ describe('primitives', () => {
     expect(id).toBe(`art_${sha256Hex('hello')}`);
     expect(artifactIdFromContent('hello')).toBe(id);
     expect(artifactIdFromContent('hello!')).not.toBe(id);
+  });
+
+  it('accepts a descriptive invariant id one character past the old 40-character suffix', () => {
+    const id = 'INV-LEDGER-SETTLED-STATUS-ONLY-VIA-CORRECTION';
+    expect(id.slice(4).length).toBe(41);
+    expect(invariantIdSchema.safeParse(id).success).toBe(true);
+    expect(invariantIdSchema.safeParse(`INV-${'A'.repeat(81)}`).success).toBe(false);
   });
 
   it('rejects malformed timestamps', () => {

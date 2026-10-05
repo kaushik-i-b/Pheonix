@@ -9,7 +9,9 @@ import { cleanupTemporaryDirectories, tempDirectory, writeSource } from './suppo
  * The citation verifier's repair hint, in isolation: when a quote is real but attributed to the
  * wrong file, the rejection must say where the text actually lives — that is what turns a
  * dead-end rejection into a repair the model can perform honestly. When the text exists nowhere,
- * the rejection must not pretend otherwise.
+ * the rejection must not pretend otherwise. An invented path gets the same treatment from the
+ * other direction: the rejection names the real contents of the nearest directory, because the
+ * name the model should have used is the one thing it could not guess.
  *
  * The second property under test is the opened-file requirement: accuracy alone does not license a
  * citation, because a quotation copied from the task brief is accurate and still is not analysis.
@@ -105,6 +107,24 @@ describe('checkFindingEvidence repair hint', () => {
     );
 
     expect(violations).toEqual([]);
+  });
+});
+
+describe('checkFindingEvidence invented-path hint', () => {
+  it('names the real sibling of a path the model abbreviated into nonexistence', () => {
+    const repo = tempDirectory('phoenix-evidence-invented-');
+    roots.push(repo);
+    writeSource(repo, 'src/main/java/com/fnb/corebank/svc/AcctSvc.java', 'public Account open(String owner) {\n');
+
+    const violations = checkFindingEvidence(
+      sourceFinding('src/main/java/com/fnb/corebank/svc/AccountSvc.java', 'public Account open(String owner) {'),
+      { roots: [repo] },
+    );
+
+    // The citation is still refused: naming the real file is grounding for a repair, never acceptance.
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.problem).toContain('cited file does not exist');
+    expect(violations[0]?.problem).toContain('svc/ really contains AcctSvc.java');
   });
 });
 

@@ -349,6 +349,30 @@ describe('OpenAiCompatibleProvider', () => {
     ]);
   });
 
+  it('keeps extraBody on every attempt, including after a response-format fallback', async () => {
+    const expectedSchema = {
+      type: 'object',
+      properties: { confidence: { type: 'number', minimum: 0, maximum: 1 } },
+      required: ['confidence'],
+    };
+    const { provider: client, calls } = provider(
+      (_call, index) =>
+        index < 2
+          ? textResponse('400 Bad Request: response_format is not supported', 400)
+          : jsonResponse(chatPayload()),
+      { extraBody: { thinking: { type: 'disabled' } } },
+    );
+    await client.complete(request({ responseFormat: 'json', expectedSchema }));
+
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.body.thinking)).toEqual([
+      { type: 'disabled' },
+      { type: 'disabled' },
+      { type: 'disabled' },
+    ]);
+    expect(calls[2]?.body.response_format).toBeUndefined();
+  });
+
   it('retries a 503 with exponential backoff and reports the attempt count', async () => {
     const warnings: { message: string; details?: Record<string, unknown> }[] = [];
     const { provider: client, calls } = provider(

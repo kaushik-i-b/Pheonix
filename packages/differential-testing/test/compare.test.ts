@@ -343,4 +343,67 @@ describe('compareSuite', () => {
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0]!.scenarioId).toBe('scn_chr-fee-002');
   });
+
+  it('ignores a seed clock instant and still reports a fee that differs', () => {
+    const baseline = execution('legacy', [
+      outcome('transfer', {
+        httpStatus: 200,
+        responseBody: { fee: LEGACY_FEE, createdAt: '2026-08-21T07:10:28.81881' },
+      }),
+    ]);
+    const item = caseItem({
+      caseId: FEE_CASE_ID,
+      status: 'passing-against-legacy',
+      captureExecutionId: hashStable(baseline),
+      assertions: [
+        assertion({
+          assertionId: 'clock',
+          kind: 'json-value',
+          path: 'responseBody.createdAt',
+          expected: '2026-08-21T07:10:28.81881',
+        }),
+        assertion({
+          assertionId: 'fee',
+          kind: 'json-value',
+          path: 'responseBody.fee',
+          expected: LEGACY_FEE,
+        }),
+      ],
+    });
+    const suite = suiteOf({ cases: [item], captures: [baseline] });
+    const sameFee = compareSuite({
+      suite,
+      modernExecutions: [
+        {
+          caseId: FEE_CASE_ID,
+          execution: execution('modern', [
+            outcome('transfer', {
+              httpStatus: 200,
+              responseBody: { fee: LEGACY_FEE, createdAt: '2026-08-21T07:01:49Z' },
+            }),
+          ]),
+        },
+      ],
+    });
+    expect(sameFee.comparisons[0]!.outcome).toBe('equal');
+    expect(sameFee.mismatches).toEqual([]);
+    expect(sameFee.comparisons[0]!.normalizationApplied.some((entry) => entry.reason === 'clock-reading')).toBe(true);
+
+    const wrongFee = compareSuite({
+      suite,
+      modernExecutions: [
+        {
+          caseId: FEE_CASE_ID,
+          execution: execution('modern', [
+            outcome('transfer', {
+              httpStatus: 200,
+              responseBody: { fee: 2, createdAt: '2026-08-21T07:01:49Z' },
+            }),
+          ]),
+        },
+      ],
+    });
+    expect(wrongFee.comparisons[0]!.outcome).toBe('divergent');
+    expect(wrongFee.mismatches.map((mismatch) => mismatch.path)).toEqual(['transfer.responseBody.fee']);
+  });
 });

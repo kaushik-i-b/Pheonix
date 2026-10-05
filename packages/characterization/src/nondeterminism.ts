@@ -76,6 +76,17 @@ export function normalizationPolicyFor(path: string): NormalizationPolicyVerdict
   return { allowed: false, reason: `"${leaf}" is not a name host policy classes as uncomparable` };
 }
 
+/**
+ * A clock reading records when a process ran. Seed rows restored from one snapshot agree with
+ * themselves, but a second implementation cannot reproduce that instant. Identifiers that stay
+ * the same across runs are still compared: a stable id is data, a stable timestamp is a clock.
+ */
+export function isClockReading(path: string): boolean {
+  const leaf = path.split('.').filter((segment) => segment.length > 0).at(-1) ?? '';
+  if (/^(time|timestamp|datetime)$/i.test(leaf)) return true;
+  return CLOCK_SUFFIX.test(leaf);
+}
+
 export function isTransportHeader(name: string): boolean {
   return TRANSPORT_RESPONSE_HEADERS.has(name.toLowerCase());
 }

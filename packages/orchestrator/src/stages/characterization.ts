@@ -1,6 +1,8 @@
 import type { ZodType, ZodTypeDef } from 'zod';
 import { runAgentTask, type AgentRun, type ArtifactExpectation, type OutputContext, type OutputContribution } from '@phoenix/agent-runtime';
 import { captureSuite, type CaptureProgress, type ScenarioTarget } from '@phoenix/characterization';
+import { slugAvoidingCollision } from '../slug.js';
+import { snapshotLegacySeed } from './legacy-seed.js';
 import {
   DEFAULT_ROLE_PERMISSIONS,
   PhoenixError,
@@ -104,7 +106,8 @@ export async function runCharacterizationStage(options: CharacterizationStageOpt
     ...(options.repositoryMap === undefined ? {} : { repositoryMap: options.repositoryMap }),
   });
   const legacy = runtime.config.legacy;
-  const target = options.target ?? legacyCaptureTarget(legacy);
+  const target =
+    options.target ?? (await attachLegacyReset(legacyCaptureTarget(legacy), runtime.config.databaseTargets.legacy));
   const capturedFrom = `${target.label} at ${target.baseUrl}`;
   const skipped: SkippedCapture[] = [];
 
@@ -157,6 +160,13 @@ export async function runCharacterizationStage(options: CharacterizationStageOpt
         target,
         known,
         taskId,
+        suiteSlug: slugAvoidingCollision(
+          runtime.artifacts,
+          runId,
+          'characterization.suite',
+          undefined,
+          taskId,
+        ),
         onProgress: (event) => {
           const skip = collectSkip(event);
           if (skip !== undefined) skipped.push(skip);
@@ -206,6 +216,8 @@ interface CapturePersisterOptions {
   target: ScenarioTarget;
   known: ReturnType<typeof knownClaimsOf>;
   taskId: TaskId;
+  /** Set when `characterization/suite.json` already belongs to an earlier attempt. */
+  suiteSlug?: string;
   onProgress: (event: CaptureProgress) => void;
 }
 
@@ -237,6 +249,7 @@ export function createCapturePersister(
     const suite = capture.suite;
     const title = `${suite.cases.length} captured scenario(s), ${suite.statistics?.assertions ?? 0} assertion(s)`;
     const artifact = context.writer.writeJson('characterization.suite', suite, characterizationSuiteSchema, {
+      ...(options.suiteSlug === undefined ? {} : { slug: options.suiteSlug }),
       title,
       tags: ['characterization', 'suite', 'captured'],
       inputs: context.inputs,
@@ -278,6 +291,12 @@ function reportProgress(runtime: RunRuntime, event: CaptureProgress): void {
  * Capture is an HTTP affair: the suite is frozen from responses, so a legacy target without a base
  * URL has nothing to answer and the stage refuses rather than capturing nothing.
  */
+async function attachLegacyReset(target: ScenarioTarget, databaseUrl: string | undefined): Promise<ScenarioTarget> {
+  if (databaseUrl === undefined || databaseUrl.length === 0) return target;
+  const reset = await snapshotLegacySeed(databaseUrl);
+  return { ...target, reset };
+}
+
 function legacyCaptureTarget(legacy: { label: string; baseUrl?: string }): ScenarioTarget {
   if (legacy.baseUrl === undefined) {
     throw new PhoenixError(

@@ -25,6 +25,27 @@ function target(baseUrl: string, extra: Partial<ScenarioTarget> = {}): ScenarioT
 }
 
 describe('executeScenario', () => {
+  it('sends one content-type when the scenario already set Content-Type', async () => {
+    let contentType: string | string[] | undefined;
+    const server = await serve((request) => {
+      contentType = request.headers['content-type'];
+      return { body: '{"ok":true}' };
+    });
+
+    await executeScenario(
+      scenario([
+        httpStep('post', '/transfers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: { amount: 1 },
+        }),
+      ]),
+      target(server.baseUrl),
+    );
+
+    expect(contentType).toBe('application/json');
+  });
+
   it('records an HTTP error response as behavior rather than as a failure to execute', async () => {
     const server = await serve(() => ({
       status: 400,

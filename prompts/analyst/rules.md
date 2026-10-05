@@ -1,6 +1,6 @@
 ---
 id: analyst.rules
-version: 1.0.4
+version: 1.0.6
 description: Task prompt that turns archaeological findings into an evidenced set of candidate business rules and invariants.
 audience: business-rule-analyst
 outputSchemaId: analyst.report
@@ -30,10 +30,30 @@ too.
 
 # Your specification
 
-Reply with **only** a JSON object — no prose before or after it, no code fences — with the shape
-below. The example is a different domain on purpose: it shows the shape of a well-formed answer, not
-an answer. Do not copy its ids, its paths, its rules or its vocabulary; nothing in it describes the
-repository you are specifying.
+Reply with **only** one JSON object — no prose before or after it, no code fences. The object must
+be complete. A reply cut off by the token limit is rejected, and a nested object inside an
+unfinished document is not this report.
+
+## Compactness
+
+Keep the report small enough to finish in one reply:
+
+- 3 to 5 rules you can support from files you opened in this task. Omit the rest.
+- 1 to 2 invariants you can support the same way.
+- Short exact citations. Each `quote` is the smallest verbatim span that still contains every
+  condition the claim depends on: the comparison, the constant, the rounding mode, the exception,
+  the status. Do not drop a condition to save space, and do not paste a whole method when those
+  lines are enough.
+- Concise unknowns for behaviour those rules and invariants do not settle. One or two sentences
+  each, not an essay.
+- Every required field, filled. Optional arrays may be empty.
+
+If a claim cannot be cited without cutting a condition out of its quote, do not make the claim.
+Record the gap under `unknowns`.
+
+The example below is a different domain on purpose: it shows the shape of a well-formed answer, not
+an answer, and it is longer than your reply should be. Do not copy its ids, its paths, its rules or
+its vocabulary; nothing in it describes the repository you are specifying.
 
 ```json
 {
@@ -142,7 +162,7 @@ repository you are specifying.
 Field rules — a reply that violates them is rejected and you will be told which field failed:
 
 - `summary`: 40–4000 characters.
-- `rules[].ruleId`: `BR-` followed by uppercase letters, digits and dashes.
+- `rules[].ruleId`: `BR-` followed by 1–80 uppercase letters, digits and dashes.
 - `rules[].kind`: `calculation`, `derived-value`, `validation`, `constraint`, `state-transition`,
   `timing`, `authorization`, `persistence`, `retry`, `default-value`, `error-handling` or `other`.
 - `rules[].confidence`, `rules[].edgeCases[].confidence`, and `invariants[].confidence`: each field is
@@ -166,7 +186,7 @@ Field rules — a reply that violates them is rejected and you will be told whic
 - `rules[].edgeCases[].id`: `EC-` followed by uppercase letters, digits and dashes.
 - `rules[].proposedChecks[].kind`: `api-scenario`, `unit-test`, `db-query`, `property-test`,
   `concurrency-probe` or `time-probe`.
-- `invariants[].invariantId`: `INV-` followed by uppercase letters, digits and dashes.
+- `invariants[].invariantId`: `INV-` followed by 1–80 uppercase letters, digits and dashes.
 - `invariants[].kind`: `conservation`, `idempotency`, `uniqueness`, `monotonicity`, `immutability`,
   `rounding-stability`, `ordering`, `retry-semantics`, `state-machine-legality`, `precision`,
   `referential-integrity`, `bound`, `totality`, `determinism`, `authorization`, `auditability` or
@@ -184,6 +204,7 @@ You cannot set `lifecycleStatus` or a `confirmation` on anything, and there is n
 every rule and invariant you produce leaves this stage a candidate, to be confirmed or contradicted
 by executed tests in later stages.
 
-Prefer fewer, sharper rules over broad ones. A rule that describes ten behaviours cannot be tested;
-ten rules can. Where two code paths disagree, that disagreement is itself the most valuable thing you
-can report — write both rules, cite both paths, and mark the contradiction.
+Prefer fewer, sharper rules over broad ones. Stop at 3 to 5 supported rules and 1 to 2 supported
+invariants. Where two code paths disagree, that disagreement is itself the most valuable thing you
+can report — write both rules, cite both paths, and mark the contradiction, and let that pair count
+toward the limit. Do not add further rules once the reply would risk being cut off.

@@ -13,6 +13,7 @@ export {
 export {
   anchorQuote,
   normalizeWhitespace,
+  MAX_SPAN_LINES,
   type QuoteAnchorInput,
   type QuoteAnchorKind,
   type QuoteAnchorResult,

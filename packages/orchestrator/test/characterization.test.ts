@@ -126,6 +126,15 @@ function proposalReport(scenarios: readonly ModelScenario[]): ScenarioProposalRe
 }
 
 describe('scenario proposal schema', () => {
+  it('keeps the first ten scenarios when the model sends more than the cap', () => {
+    const parsed = scenarioProposalReportSchema(known).parse(
+      proposalReport(Array.from({ length: 12 }, (_, index) => validScenario(index + 1))),
+    );
+    expect(parsed.scenarios).toHaveLength(10);
+    expect(parsed.scenarios[0]?.title).toBe(validScenario(1).title);
+    expect(parsed.scenarios[9]?.title).toBe(validScenario(10).title);
+  });
+
   it('accepts five scenarios that trace to the specification and only use runnable steps', () => {
     expect(() => scenarioProposalReportSchema(known).parse(proposalReport([
       validScenario(1),

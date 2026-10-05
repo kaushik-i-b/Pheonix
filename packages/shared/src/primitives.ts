@@ -25,8 +25,8 @@ export const RUN_ID_PATTERN = /^run_[0-9a-z]{32}$/;
 export const TASK_ID_PATTERN = /^task_[0-9a-z]{32}$/;
 export const STEP_ID_PATTERN = /^step_[0-9a-z]{32}$/;
 export const SCENARIO_ID_PATTERN = /^scn_[0-9a-z-]{6,40}$/;
-export const RULE_ID_PATTERN = /^BR-[A-Z0-9-]{1,40}$/;
-export const INVARIANT_ID_PATTERN = /^INV-[A-Z0-9-]{1,40}$/;
+export const RULE_ID_PATTERN = /^BR-[A-Z0-9-]{1,80}$/;
+export const INVARIANT_ID_PATTERN = /^INV-[A-Z0-9-]{1,80}$/;
 export const CASE_ID_PATTERN = /^CHR-[A-Z0-9-]{1,40}$/;
 export const ARTIFACT_ID_PATTERN = /^art_[0-9a-f]{64}$/;
 export const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
@@ -37,8 +37,12 @@ export const runIdSchema = z
 export const taskIdSchema = z.string().regex(TASK_ID_PATTERN);
 export const stepIdSchema = z.string().regex(STEP_ID_PATTERN);
 export const scenarioIdSchema = z.string().regex(SCENARIO_ID_PATTERN);
-export const ruleIdSchema = z.string().regex(RULE_ID_PATTERN);
-export const invariantIdSchema = z.string().regex(INVARIANT_ID_PATTERN);
+export const ruleIdSchema = z
+  .string()
+  .regex(RULE_ID_PATTERN, 'expected BR- followed by 1-80 uppercase letters, digits or dashes');
+export const invariantIdSchema = z
+  .string()
+  .regex(INVARIANT_ID_PATTERN, 'expected INV- followed by 1-80 uppercase letters, digits or dashes');
 export const caseIdSchema = z.string().regex(CASE_ID_PATTERN);
 export const artifactIdSchema = z.string().regex(ARTIFACT_ID_PATTERN);
 export const sha256HexSchema = z.string().regex(SHA256_HEX_PATTERN);
