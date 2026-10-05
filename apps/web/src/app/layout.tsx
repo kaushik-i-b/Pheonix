@@ -32,9 +32,9 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <body className="bg-deck text-deck-text font-sans antialiased">
         <div className="flex min-h-screen flex-col">
           <Header />
-          <SourceBanner ws={ws} />
+          <SourceBanner sourceMode={ws.sourceMode} buildTime={ws.buildTime} />
           <main className="flex-1">{children}</main>
-          <Footer ws={ws} />
+          <Footer />
         </div>
       </body>
     </html>
