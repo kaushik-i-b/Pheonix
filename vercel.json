@@ -1,0 +1,6 @@
+{
+  "framework": null,
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --filter @phoenix/web build",
+  "outputDirectory": "apps/web/out"
+}
