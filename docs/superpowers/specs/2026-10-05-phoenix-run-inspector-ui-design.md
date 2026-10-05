@@ -32,20 +32,28 @@ All data comes from the repository's `artifacts/` directory (gitignored; never
 committed). Verified against the pinned lineage
 `run_1ad5681e13294219959c3908022799c5`:
 
-- `artifacts/<runId>/index.json` — the run's artifact registry (185 entries for
-  the pinned run). Entry fields: `id` (`art_<sha256>`), `kind`, `format`,
-  `runId`, `relativePath`, `sha256`, `bytes`, `createdAt`, `schemaVersion`,
-  `producedBy {role, taskId, generator}`, `inputs`, `title`, `tags`. Includes
-  attempt artifacts (17 entries whose paths contain `-attempt-task_`).
-- `artifacts/<runId>/run/events.jsonl` — append-only event log (838 events).
-  Fields: `runId`, `seq`, `at`, `stage`, `role`, `taskId`, `type`, plus
-  type-specific fields. Stage values seen: `DISCOVERY`, `SPECIFICATION`,
-  `CHARACTERIZATION`, `IMPLEMENTATION`, and `null` (106 events must render under
-  an explicit "unattributed" bucket, never dropped). Event types: `agent.failed`,
-  `agent.finished`, `agent.started`, `agent.step`, `artifact.created`,
-  `failure.discovered`, `llm.completed`, `prompt.rendered`, `repair.completed`,
-  `repair.requested`, `test.executed`, `tool.denied`, `tool.invoked`,
-  `verification.result`. Timeline is ordered by `seq`, not file order.
+- `artifacts/<runId>/index.json` — the run's artifact registry (a top-level
+  JSON array; 185 entries for the pinned run). Entry fields: `id`
+  (`art_<sha256>`), `kind`, `format`, `runId`, `relativePath`, `sha256`,
+  `bytes`, `createdAt`, `schemaVersion`, `producedBy {role, taskId, generator}`,
+  `inputs`, `title`, `tags`. Includes attempt artifacts (17 entries whose paths
+  contain `-attempt-task_`).
+- `artifacts/<runId>/run/events.jsonl` — append-only event log (2,245 events
+  across 21 writer sessions in the pinned run). Fields: `runId`, `seq`, `at`,
+  `stage`, `role`, `taskId`, `type`, plus type-specific fields. `seq` is
+  assigned per process run (`EventSequencer` counters are in-memory,
+  `packages/shared/src/events.ts`) and restarts at 0 whenever a new process
+  appends to the same run — so the timeline preserves file append order, which
+  is chronological (`at` is monotonic across the whole file), and must not be
+  re-sorted by `seq`. Stage values seen: `DISCOVERY` (46), `SPECIFICATION`
+  (622), `CHARACTERIZATION` (145), `IMPLEMENTATION` (704), and absent (106
+  events must render under an explicit "unattributed" bucket, never dropped).
+  Event type census: `agent.step` (666), `failure.discovered` (592),
+  `tool.invoked` (393), `artifact.created` (185), `llm.completed` (184),
+  `test.executed` (96), `prompt.rendered` (48), `agent.started` (24),
+  `agent.finished` (24), `verification.result` (10), `agent.failed` (10),
+  `repair.requested` (5), `repair.completed` (5), `tool.denied` (3). This
+  mirror has no `run.started`/`run.finished`/`stage.transition` events.
 - `artifacts/<runId>/agent/result-task_<id>.json` — per-task outcome; status is
   at `.payload.status` (`SUCCEEDED` | `PARTIAL` | `FAILED`; real examples of all
   three exist in the pinned run).
@@ -72,9 +80,16 @@ committed). Verified against the pinned lineage
   `verdict`, `repairIteration`, `checks[] {checkId, kind, status, observed,
   threshold?, description}`, `mismatchSummary {bySeverity, highestSeverity,
   total, unexplained, unresolved}`, `reasons`, `confidence`, `inputArtifactIds`.
-  Pinned run: r1 NOT_EQUIVALENT … r4 NOT_EQUIVALENT (7 MAJOR mismatches) →
-  r5 EQUIVALENT (10/10 scenarios equal). Every iteration renders; failures are
-  preserved, never collapsed.
+  Suffix-less `verdict.json` / `differential-report.json` are iteration 0
+  (initial verification, before any repair); `-rN` are repair iteration N;
+  each verdict pairs with its differential report by `producedBy.taskId`, and
+  iterations order by `payload.repairIteration` (present on verdicts), never
+  by filename. Pinned run: iteration 0 NOT_EQUIVALENT 123 → r1 NOT_EQUIVALENT
+  85 → r2 NOT_EQUIVALENT 37 → r3 NOT_EQUIVALENT 123 → r4 NOT_EQUIVALENT 7
+  (the controlled defect) → r5 EQUIVALENT 0 (10/10 scenarios equal). Two
+  attempt pairs (`-attempt-task_…`, both iteration 0) also exist and render
+  as attempts. Every iteration renders; failures are preserved, never
+  collapsed.
 - Source bytes: `examples/legacy-bank/` — the unchanged workload. Citation
   `location.path` is repo-relative to the artifact's `targetRoot` (a
   machine-absolute path in the artifact, sanitized by the UI before display).
@@ -129,9 +144,11 @@ and are never published.
   total). Latest run featured and labeled "latest". Empty state if no runs.
 - `/runs/[runId]` — Run overview:
   - Header: run id, source mode banner (see §6), first/last event time, totals.
-  - Stage timeline: events grouped by stage in `seq` order; `unattributed`
-    bucket for null-stage events; per-event detail (type, at, role, summary
-    fields). Agent tasks render with their recorded outcome badge.
+  - Stage timeline: events grouped by stage in file append order (chronological;
+    `seq` restarts across writer processes and is displayed as recorded, never
+    used as the global order); `unattributed` bucket for events whose `stage` is
+    absent; per-event detail (type, at, role, summary fields). Agent tasks
+    render with their recorded outcome badge.
   - Task table: all tasks seen in events, role, stage, outcome, links to their
     recorded artifacts.
   - Artifact inventory: registry entries grouped by stage/kind, each labeled
