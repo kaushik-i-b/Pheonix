@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { Workspace } from './repo-root.js';
+import type { Workspace } from './repo-root';
 
 export type Variant = 'canonical' | 'attempt';
 

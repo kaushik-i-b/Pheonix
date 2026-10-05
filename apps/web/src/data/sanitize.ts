@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Workspace } from './repo-root.js';
+import type { Workspace } from './repo-root';
 
 const hostPathPattern = /(?<![\w.-])\/(?:Users|home|private|var|tmp|opt|Volumes)\/[^\s"'`)\]},;]*/g;
 

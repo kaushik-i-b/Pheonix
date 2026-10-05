@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { Workspace } from './repo-root.js';
-import { sanitizeForDisplay } from './sanitize.js';
+import type { Workspace } from './repo-root';
+import { sanitizeForDisplay } from './sanitize';
 
 export interface RawEvent {
   runId: string;

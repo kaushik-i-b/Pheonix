@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Workspace } from './repo-root.js';
-import { normalizeEvidenceList, normalizeUnknown } from './specification.js';
-import type { Evidence, SpecUnknown } from './specification.js';
+import type { Workspace } from './repo-root';
+import { normalizeEvidenceList, normalizeUnknown } from './specification';
+import type { Evidence, SpecUnknown } from './specification';
 
 export interface Finding {
   id: string;

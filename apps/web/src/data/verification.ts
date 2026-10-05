@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { classifyVariant } from './artifacts.js';
-import type { Variant } from './artifacts.js';
-import type { Workspace } from './repo-root.js';
-import { sanitizeForDisplay } from './sanitize.js';
+import { classifyVariant } from './artifacts';
+import type { Variant } from './artifacts';
+import type { Workspace } from './repo-root';
+import { sanitizeForDisplay } from './sanitize';
 
 export interface VerdictCheck {
   checkId: string;

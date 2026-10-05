@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { artifactSlug, classifyVariant } from './artifacts.js';
-import type { Variant } from './artifacts.js';
-import type { Workspace } from './repo-root.js';
-import { renderObserved } from './verification.js';
+import { artifactSlug, classifyVariant } from './artifacts';
+import type { Variant } from './artifacts';
+import type { Workspace } from './repo-root';
+import { renderObserved } from './verification';
 
 export interface AssertionView {
   assertionId: string;

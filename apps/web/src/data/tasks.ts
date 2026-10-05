@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import type { Workspace } from './repo-root.js';
-import type { RawEvent } from './events.js';
+import type { Workspace } from './repo-root';
+import type { RawEvent } from './events';
 
 export type TaskStatus = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'UNKNOWN';
 

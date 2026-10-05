@@ -23,9 +23,7 @@ describe('maskHostPaths', () => {
     expect(maskHostPaths('denied /Users/nobody/secret/x now')).toBe(
       'denied [host path withheld] now',
     );
-    expect(maskHostPaths('at /private/var/folders/ab/cd yes')).toBe(
-      'at [host path withheld] yes',
-    );
+    expect(maskHostPaths('at /private/var/folders/ab/cd yes')).toBe('at [host path withheld] yes');
   });
 
   it('leaves relative paths and URLs alone', () => {

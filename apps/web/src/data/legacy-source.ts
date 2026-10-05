@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Workspace } from './repo-root.js';
+import type { Workspace } from './repo-root';
 
 export type LegacySource =
   { ok: true; content: string; lineCount: number } | { ok: false; reason: 'missing' | 'io-error' };

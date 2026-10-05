@@ -1,5 +1,5 @@
-import { readLegacySource, splitLines } from './legacy-source.js';
-import type { Workspace } from './repo-root.js';
+import { readLegacySource, splitLines } from './legacy-source';
+import type { Workspace } from './repo-root';
 
 export type RecheckResult =
   | { state: 'matched' }

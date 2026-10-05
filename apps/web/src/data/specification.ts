@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import type { Variant } from './artifacts.js';
-import type { Workspace } from './repo-root.js';
+import type { Variant } from './artifacts';
+import type { Workspace } from './repo-root';
 
 export interface Evidence {
   id: string | null;

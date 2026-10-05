@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import type { Workspace } from './repo-root.js';
+import type { Workspace } from './repo-root';
 
 export interface VerdictSummary {
   iteration: number;

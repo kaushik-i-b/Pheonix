@@ -1,6 +1,10 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { IBM_Plex_Mono, Instrument_Sans } from 'next/font/google';
+import { Footer } from '../components/footer';
+import { Header } from '../components/header';
+import { SourceBanner } from '../components/source-banner';
+import { resolveWorkspace } from '../data/repo-root';
 import './globals.css';
 
 const instrumentSans = Instrument_Sans({
@@ -22,9 +26,17 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+  const ws = resolveWorkspace();
   return (
     <html lang="en" className={`${instrumentSans.variable} ${ibmPlexMono.variable}`}>
-      <body className="bg-deck text-deck-text font-sans antialiased">{children}</body>
+      <body className="bg-deck text-deck-text font-sans antialiased">
+        <div className="flex min-h-screen flex-col">
+          <Header />
+          <SourceBanner ws={ws} />
+          <main className="flex-1">{children}</main>
+          <Footer ws={ws} />
+        </div>
+      </body>
     </html>
   );
 }
