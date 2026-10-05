@@ -224,7 +224,7 @@ function normalizeChecks(
   return out;
 }
 
-function renderObserved(value: unknown, ws: Workspace): string {
+export function renderObserved(value: unknown, ws: Workspace): string {
   if (typeof value === 'string') return sanitizeForDisplay(value, ws);
   if (typeof value === 'object' && value !== null) {
     return sanitizeForDisplay(JSON.stringify(value) ?? '', ws);
