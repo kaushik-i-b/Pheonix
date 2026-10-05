@@ -6,6 +6,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/dist/**',
       '**/.next/**',
+      '**/out/**',
       '**/coverage/**',
       'artifacts/**',
       // Runtime scratch: PHOENIX_WORKSPACE_ROOT holds code a live run generated, not source. Linting

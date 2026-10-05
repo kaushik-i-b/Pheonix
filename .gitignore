@@ -8,6 +8,7 @@ build/
 *.tsbuildinfo
 .next/
 out/
+.vercel/
 
 # java / maven (legacy example)
 target/
